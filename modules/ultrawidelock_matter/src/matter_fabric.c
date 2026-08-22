@@ -27,6 +27,7 @@
  */
 #define DN_TAG_MATTER_NODE_ID   17u
 #define DN_TAG_MATTER_FABRIC_ID 21u
+#define DN_TAG_MATTER_CASE_AUTH_TAG 22u
 
 /** Pull the node and fabric ids out of a subject DN the reader is sitting on. */
 static int parse_subject(struct matter_tlv_reader *r, struct matter_cert_info *out)
@@ -60,9 +61,16 @@ static int parse_subject(struct matter_tlv_reader *r, struct matter_cert_info *o
 			}
 			out->fabric_id = v;
 			out->have_fabric_id = true;
+		} else if (matter_tlv_tag(r) == MATTER_TLV_CTX(DN_TAG_MATTER_CASE_AUTH_TAG)) {
+			if (matter_tlv_get_u64(r, &v) != MATTER_OK || v > UINT32_MAX) {
+				return MATTER_E_TYPE;
+			}
+			if (out->cat_count >= MATTER_CASE_CAT_MAX) {
+				return MATTER_E_NOSPACE;
+			}
+			out->cats[out->cat_count++] = (uint32_t)v;
 		}
-		/* Every other attribute -- the common name a commissioner may
-		 * add, the CASE authenticated tags -- is skipped by next(). */
+		/* Every other attribute, such as a common name, is skipped. */
 	}
 
 	return matter_tlv_exit(r);

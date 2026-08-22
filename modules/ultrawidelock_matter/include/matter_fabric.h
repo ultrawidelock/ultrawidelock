@@ -62,10 +62,15 @@
  */
 #define MATTER_INSTANCE_NAME_LEN 34u
 
+/** Matter limits an operational certificate to three CASE Authenticated Tags. */
+#define MATTER_CASE_CAT_MAX 3u
+
 /** What matter_cert_parse() found. Absent fields leave their have_* flag false. */
 struct matter_cert_info {
 	uint64_t node_id;
 	uint64_t fabric_id;
+	uint32_t cats[MATTER_CASE_CAT_MAX];
+	size_t cat_count;
 	uint8_t public_key[MATTER_FABRIC_PUBKEY_LEN];
 	bool have_node_id;
 	bool have_fabric_id;

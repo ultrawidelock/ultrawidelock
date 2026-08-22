@@ -13,6 +13,461 @@
 #include "matter_im.h"
 #include "matter_tlv.h"
 
+/* Certificate tags (credentials/CHIPCert.h:68-96). */
+#define CERT_TAG_SERIAL     1u
+#define CERT_TAG_SIG_ALGO   2u
+#define CERT_TAG_ISSUER     3u
+#define CERT_TAG_NOT_BEFORE 4u
+#define CERT_TAG_NOT_AFTER  5u
+#define CERT_TAG_SUBJECT    6u
+#define CERT_TAG_PUB_ALGO   7u
+#define CERT_TAG_CURVE      8u
+#define CERT_TAG_PUBLIC_KEY 9u
+#define CERT_TAG_EXTENSIONS 10u
+#define CERT_TAG_SIGNATURE  11u
+
+struct der_writer {
+	uint8_t *buf;
+	size_t cap;
+	size_t len;
+	size_t marks[8];
+	uint8_t depth;
+	int rc;
+};
+
+static bool der_room(struct der_writer *w, size_t n)
+{
+	if (w->rc != MATTER_OK || n > w->cap - w->len) {
+		w->rc = w->rc == MATTER_OK ? MATTER_E_NOSPACE : w->rc;
+		return false;
+	}
+	return true;
+}
+
+static void der_raw(struct der_writer *w, const void *p, size_t n)
+{
+	if (der_room(w, n)) {
+		memcpy(&w->buf[w->len], p, n);
+		w->len += n;
+	}
+}
+
+static void der_open(struct der_writer *w, uint8_t tag)
+{
+	if (w->depth >= sizeof(w->marks) / sizeof(w->marks[0]) || !der_room(w, 4u)) {
+		w->rc = w->rc == MATTER_OK ? MATTER_E_DEPTH : w->rc;
+		return;
+	}
+	w->buf[w->len++] = tag;
+	w->marks[w->depth++] = w->len;
+	w->buf[w->len++] = 0x82u;
+	w->buf[w->len++] = 0u;
+	w->buf[w->len++] = 0u;
+}
+
+static void der_close(struct der_writer *w)
+{
+	size_t mark;
+	size_t body;
+	size_t n;
+
+	if (w->rc != MATTER_OK) {
+		return;
+	}
+	if (w->depth == 0u) {
+		w->rc = MATTER_E_STATE;
+		return;
+	}
+	mark = w->marks[--w->depth];
+	body = w->len - mark - 3u;
+	n = body < 128u ? 1u : (body < 256u ? 2u : 3u);
+	if (n != 3u) {
+		memmove(&w->buf[mark + n], &w->buf[mark + 3u], body);
+		w->len -= 3u - n;
+	}
+	if (n == 1u) {
+		w->buf[mark] = (uint8_t)body;
+	} else if (n == 2u) {
+		w->buf[mark] = 0x81u;
+		w->buf[mark + 1u] = (uint8_t)body;
+	} else {
+		w->buf[mark] = 0x82u;
+		w->buf[mark + 1u] = (uint8_t)(body >> 8);
+		w->buf[mark + 2u] = (uint8_t)body;
+	}
+}
+
+static void der_value(struct der_writer *w, uint8_t tag, const void *p, size_t n)
+{
+	der_open(w, tag);
+	der_raw(w, p, n);
+	der_close(w);
+}
+
+static void der_oid(struct der_writer *w, const uint8_t *oid, size_t n)
+{
+	der_value(w, 0x06u, oid, n);
+}
+
+static int read_u64(struct matter_tlv_reader *r, uint64_t *v)
+{
+	return matter_tlv_get_u64(r, v) == MATTER_OK ? MATTER_OK : MATTER_E_TYPE;
+}
+
+static int next_tag(struct matter_tlv_reader *r, uint8_t tag)
+{
+	int rc = matter_tlv_next(r);
+	return rc == MATTER_OK && matter_tlv_tag(r) == MATTER_TLV_CTX(tag) ? MATTER_OK
+									   : MATTER_E_TYPE;
+}
+
+static const uint8_t k_oid_ecdsa_sha256[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02};
+static const uint8_t k_oid_ec_public[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01};
+static const uint8_t k_oid_p256[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07};
+
+static void der_algorithm(struct der_writer *w)
+{
+	der_open(w, 0x30u);
+	der_oid(w, k_oid_ecdsa_sha256, sizeof(k_oid_ecdsa_sha256));
+	der_close(w);
+}
+
+static int der_dn_oid(struct der_writer *w, uint8_t id)
+{
+	static const uint8_t matter_prefix[] = {0x2b, 0x06, 0x01, 0x04, 0x01,
+						0x82, 0xa2, 0x7c, 0x01};
+	uint8_t oid[10];
+
+	/* Operational RCAC/ICAC/NOC DNs use Matter-defined identifiers only. */
+	if (id < 17u || id > 23u) {
+		return MATTER_E_TYPE;
+	}
+	memcpy(oid, matter_prefix, sizeof(matter_prefix));
+	oid[sizeof(matter_prefix)] = (uint8_t)(id - 16u);
+	der_oid(w, oid, sizeof(oid));
+	return MATTER_OK;
+}
+
+static void hex_fixed(char *out, uint64_t v, size_t n)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	while (n-- != 0u) {
+		out[n] = hex[v & 0x0fu];
+		v >>= 4;
+	}
+}
+
+static int convert_dn(struct matter_tlv_reader *r, struct der_writer *w)
+{
+	int rc;
+
+	if (!matter_tlv_is_container(r) || matter_tlv_enter(r) != MATTER_OK) {
+		return MATTER_E_TYPE;
+	}
+	der_open(w, 0x30u);
+	while ((rc = matter_tlv_next(r)) == MATTER_OK) {
+		uint8_t raw = (uint8_t)matter_tlv_tag(r);
+		uint8_t id = raw & 0x7fu;
+		char hex[16];
+		size_t n;
+		uint64_t v;
+
+		der_open(w, 0x31u);
+		der_open(w, 0x30u);
+		if (der_dn_oid(w, id) != MATTER_OK) {
+			return MATTER_E_TYPE;
+		}
+		if (read_u64(r, &v) != MATTER_OK) {
+			return MATTER_E_TYPE;
+		}
+		n = id == 22u ? 8u : 16u;
+		hex_fixed(hex, v, n);
+		der_value(w, 0x0cu, hex, n);
+		der_close(w);
+		der_close(w);
+	}
+	der_close(w);
+	return rc == MATTER_END && matter_tlv_exit(r) == MATTER_OK ? w->rc : MATTER_E_TYPE;
+}
+
+static void cert_time(uint32_t seconds, char out[15], size_t *n)
+{
+	static const char digits[] = "0123456789";
+	int64_t z, era;
+	unsigned doe, yoe, y, doy, mp, month, day, year;
+	uint32_t sod;
+	char *p = out;
+
+	if (seconds == 0u) {
+		memcpy(out, "99991231235959Z", 15u);
+		*n = 15u;
+		return;
+	}
+	z = (int64_t)(seconds / 86400u) + 10957 + 719468;
+	sod = seconds % 86400u;
+	era = (z >= 0 ? z : z - 146096) / 146097;
+	doe = (unsigned)(z - era * 146097);
+	yoe = (doe - doe / 1460u + doe / 36524u - doe / 146096u) / 365u;
+	y = yoe + (unsigned)era * 400u;
+	doy = doe - (365u * yoe + yoe / 4u - yoe / 100u);
+	mp = (5u * doy + 2u) / 153u;
+	day = doy - (153u * mp + 2u) / 5u + 1u;
+	month = mp < 10u ? mp + 3u : mp - 9u;
+	year = y + (month <= 2u);
+#define TWO(v)                                                                                     \
+	do {                                                                                       \
+		*p++ = digits[((v) / 10u) % 10u];                                                  \
+		*p++ = digits[(v) % 10u];                                                          \
+	} while (0)
+	if (year < 2050u) {
+		TWO(year);
+		*n = 13u;
+	} else {
+		TWO(year / 100u);
+		TWO(year);
+		*n = 15u;
+	}
+	TWO(month);
+	TWO(day);
+	TWO(sod / 3600u);
+	TWO((sod / 60u) % 60u);
+	TWO(sod % 60u);
+	*p = 'Z';
+#undef TWO
+}
+
+static void der_bit_flags(struct der_writer *w, uint64_t flags)
+{
+	uint8_t b[3];
+	size_t bytes = flags >= 256u ? 2u : 1u;
+	uint8_t highest = 0u;
+	uint64_t x = flags;
+
+	while (x > 1u) {
+		x >>= 1;
+		highest++;
+	}
+	b[0] = flags == 0u ? 0u : (uint8_t)(7u - (highest & 7u));
+	for (size_t i = 0u; i < bytes; i++) {
+		uint8_t v = (uint8_t)(flags >> (8u * i));
+		v = (uint8_t)(((v & 0x55u) << 1) | ((v >> 1) & 0x55u));
+		v = (uint8_t)(((v & 0x33u) << 2) | ((v >> 2) & 0x33u));
+		b[i + 1u] = (uint8_t)((v << 4) | (v >> 4));
+	}
+	der_value(w, 0x03u, b, bytes + 1u);
+}
+
+static int convert_extensions(struct matter_tlv_reader *r, struct der_writer *w)
+{
+	static const uint8_t ext_oid[][3] = {{0},
+					     {0x55, 0x1d, 0x13},
+					     {0x55, 0x1d, 0x0f},
+					     {0x55, 0x1d, 0x25},
+					     {0x55, 0x1d, 0x0e},
+					     {0x55, 0x1d, 0x23}};
+	static const uint8_t purpose_prefix[] = {0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03};
+	int rc;
+
+	if (!matter_tlv_is_container(r) || matter_tlv_enter(r) != MATTER_OK) {
+		return MATTER_E_TYPE;
+	}
+	der_open(w, 0xa3u);
+	der_open(w, 0x30u);
+	while ((rc = matter_tlv_next(r)) == MATTER_OK) {
+		uint8_t id = (uint8_t)matter_tlv_tag(r);
+		const uint8_t *b;
+		size_t n;
+		uint64_t v;
+
+		if (id < 1u || id > 5u) {
+			return MATTER_E_TYPE;
+		}
+		der_open(w, 0x30u);
+		der_oid(w, ext_oid[id], 3u);
+		if (id <= 3u) {
+			uint8_t yes = 0xffu;
+			der_value(w, 0x01u, &yes, 1u);
+		}
+		der_open(w, 0x04u);
+		if (id == 1u) {
+			bool ca;
+			if (!matter_tlv_is_container(r) || matter_tlv_enter(r) != MATTER_OK ||
+			    matter_tlv_next(r) != MATTER_OK ||
+			    matter_tlv_get_bool(r, &ca) != MATTER_OK) {
+				return MATTER_E_TYPE;
+			}
+			der_open(w, 0x30u);
+			if (ca) {
+				uint8_t yes = 0xffu;
+				der_value(w, 0x01u, &yes, 1u);
+			}
+			if (matter_tlv_next(r) == MATTER_OK) {
+				uint8_t x;
+				if (read_u64(r, &v) != MATTER_OK || v > 127u) {
+					return MATTER_E_TYPE;
+				}
+				x = (uint8_t)v;
+				der_value(w, 0x02u, &x, 1u);
+			}
+			der_close(w);
+			if (matter_tlv_exit(r) != MATTER_OK) {
+				return MATTER_E_TYPE;
+			}
+		} else if (id == 2u) {
+			if (read_u64(r, &v) != MATTER_OK) {
+				return MATTER_E_TYPE;
+			}
+			der_bit_flags(w, v);
+		} else if (id == 3u) {
+			if (!matter_tlv_is_container(r) || matter_tlv_enter(r) != MATTER_OK) {
+				return MATTER_E_TYPE;
+			}
+			der_open(w, 0x30u);
+			while (matter_tlv_next(r) == MATTER_OK) {
+				uint8_t oid[8];
+				if (read_u64(r, &v) != MATTER_OK || v < 1u || v > 6u) {
+					return MATTER_E_TYPE;
+				}
+				memcpy(oid, purpose_prefix, sizeof(purpose_prefix));
+				oid[7] = (uint8_t)v;
+				der_oid(w, oid, sizeof(oid));
+			}
+			der_close(w);
+			if (matter_tlv_exit(r) != MATTER_OK) {
+				return MATTER_E_TYPE;
+			}
+		} else {
+			if (matter_tlv_get_bytes(r, &b, &n) != MATTER_OK) {
+				return MATTER_E_TYPE;
+			}
+			if (id == 4u) {
+				der_value(w, 0x04u, b, n);
+			} else {
+				der_open(w, 0x30u);
+				der_value(w, 0x80u, b, n);
+				der_close(w);
+			}
+		}
+		der_close(w);
+		der_close(w);
+	}
+	der_close(w);
+	der_close(w);
+	return rc == MATTER_END && matter_tlv_exit(r) == MATTER_OK ? w->rc : MATTER_E_TYPE;
+}
+
+int matter_case_cert_tbs(const uint8_t *cert, size_t len, uint8_t *out, size_t cap, size_t *out_len,
+			 const uint8_t **signature)
+{
+	struct matter_tlv_reader r;
+	struct der_writer w = {.buf = out, .cap = cap};
+	const uint8_t *b;
+	size_t n;
+	uint64_t v;
+	char time[15];
+	int rc;
+
+	if (cert == NULL || out == NULL || out_len == NULL || signature == NULL) {
+		return MATTER_E_INVAL;
+	}
+	matter_tlv_reader_init(&r, cert, len);
+	if (matter_tlv_next(&r) != MATTER_OK || !matter_tlv_is_container(&r) ||
+	    matter_tlv_enter(&r) != MATTER_OK) {
+		return MATTER_E_TYPE;
+	}
+	der_open(&w, 0x30u);
+	der_open(&w, 0xa0u);
+	{
+		uint8_t x = 2u;
+		der_value(&w, 0x02u, &x, 1u);
+	}
+	der_close(&w);
+	if (next_tag(&r, CERT_TAG_SERIAL) != MATTER_OK ||
+	    matter_tlv_get_bytes(&r, &b, &n) != MATTER_OK) {
+		return MATTER_E_TYPE;
+	}
+	der_value(&w, 0x02u, b, n);
+	if (next_tag(&r, CERT_TAG_SIG_ALGO) != MATTER_OK || read_u64(&r, &v) != MATTER_OK ||
+	    v != 1u) {
+		return MATTER_E_TYPE;
+	}
+	der_algorithm(&w);
+	if (next_tag(&r, CERT_TAG_ISSUER) != MATTER_OK || convert_dn(&r, &w) != MATTER_OK) {
+		return MATTER_E_TYPE;
+	}
+	der_open(&w, 0x30u);
+	if (next_tag(&r, CERT_TAG_NOT_BEFORE) != MATTER_OK || read_u64(&r, &v) != MATTER_OK ||
+	    v > UINT32_MAX) {
+		return MATTER_E_TYPE;
+	}
+	cert_time((uint32_t)v, time, &n);
+	der_value(&w, n == 13u ? 0x17u : 0x18u, time, n);
+	if (next_tag(&r, CERT_TAG_NOT_AFTER) != MATTER_OK || read_u64(&r, &v) != MATTER_OK ||
+	    v > UINT32_MAX) {
+		return MATTER_E_TYPE;
+	}
+	cert_time((uint32_t)v, time, &n);
+	der_value(&w, n == 13u ? 0x17u : 0x18u, time, n);
+	der_close(&w);
+	if (next_tag(&r, CERT_TAG_SUBJECT) != MATTER_OK || convert_dn(&r, &w) != MATTER_OK) {
+		return MATTER_E_TYPE;
+	}
+	if (next_tag(&r, CERT_TAG_PUB_ALGO) != MATTER_OK || read_u64(&r, &v) != MATTER_OK ||
+	    v != 1u || next_tag(&r, CERT_TAG_CURVE) != MATTER_OK || read_u64(&r, &v) != MATTER_OK ||
+	    v != 1u || next_tag(&r, CERT_TAG_PUBLIC_KEY) != MATTER_OK ||
+	    matter_tlv_get_bytes(&r, &b, &n) != MATTER_OK || n != MATTER_CASE_PUBKEY_LEN) {
+		return MATTER_E_TYPE;
+	}
+	der_open(&w, 0x30u);
+	der_open(&w, 0x30u);
+	der_oid(&w, k_oid_ec_public, sizeof(k_oid_ec_public));
+	der_oid(&w, k_oid_p256, sizeof(k_oid_p256));
+	der_close(&w);
+	der_open(&w, 0x03u);
+	{
+		uint8_t zero = 0u;
+		der_raw(&w, &zero, 1u);
+		der_raw(&w, b, n);
+	}
+	der_close(&w);
+	der_close(&w);
+	if (next_tag(&r, CERT_TAG_EXTENSIONS) != MATTER_OK ||
+	    convert_extensions(&r, &w) != MATTER_OK) {
+		return MATTER_E_TYPE;
+	}
+	der_close(&w);
+	if (next_tag(&r, CERT_TAG_SIGNATURE) != MATTER_OK ||
+	    matter_tlv_get_bytes(&r, signature, &n) != MATTER_OK || n != MATTER_CASE_SIG_LEN) {
+		return MATTER_E_TYPE;
+	}
+	rc = matter_tlv_next(&r);
+	if (rc != MATTER_END || matter_tlv_exit(&r) != MATTER_OK || w.depth != 0u ||
+	    w.rc != MATTER_OK) {
+		return w.rc != MATTER_OK ? w.rc : MATTER_E_TYPE;
+	}
+	*out_len = w.len;
+	return MATTER_OK;
+}
+
+int matter_case_cert_verify(const uint8_t *cert, size_t len,
+			    const uint8_t issuer_pub[MATTER_CASE_PUBKEY_LEN], uint8_t *scratch,
+			    size_t scratch_cap)
+{
+	const uint8_t *sig;
+	size_t tbs_len;
+	int rc;
+
+	if (cert == NULL || issuer_pub == NULL || scratch == NULL || len == 0u) {
+		return MATTER_E_INVAL;
+	}
+	rc = matter_case_cert_tbs(cert, len, scratch, scratch_cap, &tbs_len, &sig);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	return matter_case_verify(issuer_pub, scratch, tbs_len, sig) == 0 ? MATTER_OK
+									  : MATTER_E_ACCESS;
+}
+
 /* Sigma1 field tags (CASESession.cpp:74-83). */
 #define TAG_S1_INITIATOR_RANDOM  1u
 #define TAG_S1_INITIATOR_SESSION 2u
@@ -37,7 +492,7 @@ int matter_case_operational_ipk(const uint8_t epoch_key[MATTER_CASE_IPK_LEN],
 		return MATTER_E_INVAL;
 	}
 	if (ultrawidelock_hkdf(compressed_fabric_id, 8u, epoch_key, MATTER_CASE_IPK_LEN, k_info,
-		       sizeof(k_info), out, MATTER_CASE_IPK_LEN) != 0) {
+			       sizeof(k_info), out, MATTER_CASE_IPK_LEN) != 0) {
 		return MATTER_E_INVAL;
 	}
 	return MATTER_OK;
@@ -258,8 +713,8 @@ int matter_case_sigma2_encode(const struct matter_case_sigma2_in *in, uint8_t *o
 	memcpy(&salt[off], in->transcript_hash, 32u);
 	off += 32u;
 
-	rc = ultrawidelock_hkdf(salt, off, shared_out, MATTER_CASE_SECRET_LEN, k_info, sizeof(k_info), s2k,
-			sizeof(s2k));
+	rc = ultrawidelock_hkdf(salt, off, shared_out, MATTER_CASE_SECRET_LEN, k_info,
+				sizeof(k_info), s2k, sizeof(s2k));
 	memset(salt, 0, sizeof(salt));
 	if (rc != 0) {
 		return MATTER_E_STATE;
@@ -456,7 +911,7 @@ int matter_case_sigma3_open(const struct matter_case_sigma3_in *in, const uint8_
 	memcpy(salt, in->ipk, MATTER_CASE_IPK_LEN);
 	memcpy(&salt[MATTER_CASE_IPK_LEN], in->transcript_hash, 32u);
 	rc = ultrawidelock_hkdf(salt, sizeof(salt), in->shared, MATTER_CASE_SECRET_LEN, k_info,
-			sizeof(k_info), s3k, sizeof(s3k));
+				sizeof(k_info), s3k, sizeof(s3k));
 	memset(salt, 0, sizeof(salt));
 	if (rc != 0) {
 		return MATTER_E_STATE;
@@ -539,6 +994,8 @@ int matter_case_sigma3_open(const struct matter_case_sigma3_in *in, const uint8_
 
 	out->node_id = cert.node_id;
 	out->fabric_id = cert.fabric_id;
+	memcpy(out->cats, cert.cats, sizeof(out->cats));
+	out->cat_count = cert.cat_count;
 	memcpy(out->public_key, cert.public_key, MATTER_CASE_PUBKEY_LEN);
 	return MATTER_OK;
 }

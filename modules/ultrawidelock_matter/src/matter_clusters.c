@@ -178,8 +178,36 @@ static size_t fabric_slot_for_request(const struct matter_device_info *info, uin
 #define MATTER_TLV_NULL_TYPE            0x14u
 #define MATTER_DEVICE_TYPE_ROOT_NODE    0x0016u
 #define MATTER_DEVICE_TYPE_DOOR_LOCK    0x000Au
+#define MATTER_CASE_AUTH_TAG_MASK       UINT64_C(0xFFFFFFFF00000000)
+#define MATTER_CASE_AUTH_TAG_PREFIX     UINT64_C(0xFFFFFFFD00000000)
 
-static bool acl_subjects_match(struct matter_tlv_reader *r, uint64_t node_id)
+/* A CASE Authenticated Tag subject is 0xFFFFFFFD || identifier || version.
+ * The peer's CATs below came from the NOC whose Sigma3 signature was verified. */
+static bool acl_subject_matches(uint64_t subject, uint64_t node_id, const uint32_t *cats,
+				size_t cat_count)
+{
+	uint32_t requested;
+
+	if (subject == node_id) {
+		return true;
+	}
+	if ((subject & MATTER_CASE_AUTH_TAG_MASK) != MATTER_CASE_AUTH_TAG_PREFIX) {
+		return false;
+	}
+	requested = (uint32_t)subject;
+	for (size_t i = 0u; i < cat_count; i++) {
+		/* The high half names the CAT; a newer version satisfies an ACL
+		 * written for an older version of the same CAT. */
+		if ((cats[i] >> 16) == (requested >> 16) &&
+		    (uint16_t)cats[i] >= (uint16_t)requested) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool acl_subjects_match(struct matter_tlv_reader *r, uint64_t node_id,
+			       const uint32_t *cats, size_t cat_count)
 {
 	bool match = false;
 
@@ -199,7 +227,8 @@ static bool acl_subjects_match(struct matter_tlv_reader *r, uint64_t node_id)
 		if (rc != MATTER_OK) {
 			return false;
 		}
-		if (matter_tlv_get_u64(r, &subject) == MATTER_OK && subject == node_id) {
+		if (matter_tlv_get_u64(r, &subject) == MATTER_OK &&
+		    acl_subject_matches(subject, node_id, cats, cat_count)) {
 			match = true;
 		}
 	}
@@ -288,6 +317,7 @@ static bool acl_targets_match(struct matter_tlv_reader *r, uint16_t endpoint, ui
 }
 
 static bool acl_entry_grants(struct matter_tlv_reader *r, uint64_t node_id,
+			     const uint32_t *cats, size_t cat_count,
 			     uint8_t required_privilege, uint16_t endpoint, uint32_t cluster)
 {
 	uint64_t privilege = 0u;
@@ -316,7 +346,7 @@ static bool acl_entry_grants(struct matter_tlv_reader *r, uint64_t node_id,
 		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_AUTH_MODE_TAG)) {
 			have_auth_mode = matter_tlv_get_u64(r, &auth_mode) == MATTER_OK;
 		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_SUBJECTS_TAG)) {
-			subjects_match = acl_subjects_match(r, node_id);
+			subjects_match = acl_subjects_match(r, node_id, cats, cat_count);
 		} else if (tag == MATTER_TLV_CTX(MATTER_AC_ENTRY_TARGETS_TAG)) {
 			targets_match = acl_targets_match(r, endpoint, cluster);
 		}
@@ -340,7 +370,9 @@ static bool fabric_slot_has_privilege(const struct matter_device_info *info, siz
 	/* Bootstrap authority from AddNOC. It remains a recovery administrator
 	 * even if a later malformed ACL would otherwise lock every controller out. */
 	if (info->fabrics[slot].case_admin_subject != 0u &&
-	    info->fabrics[slot].case_admin_subject == info->accessing_node_id) {
+	    acl_subject_matches(info->fabrics[slot].case_admin_subject,
+				info->accessing_node_id, info->accessing_cats,
+				info->accessing_cat_count)) {
 		return true;
 	}
 	if (info->fabric_acls[slot].len == 0u) {
@@ -362,7 +394,8 @@ static bool fabric_slot_has_privilege(const struct matter_device_info *info, siz
 		if (rc != MATTER_OK) {
 			return false;
 		}
-		if (acl_entry_grants(&r, info->accessing_node_id, required_privilege,
+		if (acl_entry_grants(&r, info->accessing_node_id, info->accessing_cats,
+				     info->accessing_cat_count, required_privilege,
 				     endpoint, cluster)) {
 			return true;
 		}
@@ -3108,8 +3141,8 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 
 			if ((info->attempt.owned_slots & MATTER_FABRIC_SLOT_BIT(slot)) != 0u &&
 			    f->index == info->accessing_fabric_index &&
-			    (f->case_admin_subject == 0u ||
-			     f->case_admin_subject == info->accessing_node_id)) {
+			    acl_subject_matches(f->case_admin_subject, info->accessing_node_id,
+					info->accessing_cats, info->accessing_cat_count)) {
 				break;
 			}
 		}
@@ -3463,8 +3496,16 @@ static uint8_t attr_write(void *ctx, const struct matter_im_path *path, const ui
 			if (info->accessing_fabric_index == 0u) {
 				return MATTER_IM_STATUS_UNSUPPORTED_ACCESS;
 			}
-			rc = matter_binding_write(&info->binding, info->accessing_fabric_index,
-						  data, data_len);
+			if (path->have_list_index) {
+				if (!path->list_index_null) {
+					return MATTER_IM_STATUS_CONSTRAINT_ERROR;
+				}
+				rc = matter_binding_append(&info->binding,
+							   info->accessing_fabric_index, data, data_len);
+			} else {
+				rc = matter_binding_write(&info->binding,
+							  info->accessing_fabric_index, data, data_len);
+			}
 			if (rc == MATTER_E_NOSPACE) {
 				return MATTER_IM_STATUS_RESOURCE_EXHAUSTED;
 			}

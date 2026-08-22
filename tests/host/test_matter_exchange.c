@@ -185,7 +185,7 @@ void test_matter_exchange(void)
 		     MATTER_OK);
 		T_EQ("large reply frames",
 		     matter_exchange_reply(&x, 0x21u, large, sizeof(large), out, sizeof(out),
-				       &out_len),
+					   &out_len),
 		     MATTER_OK);
 		T_EQ("duplicate is suppressed",
 		     matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)), MATTER_E_DUP);
@@ -546,7 +546,8 @@ void test_matter_exchange(void)
 		T_EQ("tampered in-place request is refused",
 		     matter_exchange_recv_in_place(&x, msg, sealed, &in), MATTER_E_TYPE);
 		for (size_t i = 0u; i < plain_len; i++) {
-			T_EQ("failed authentication zeroes plaintext", msg[wire_header_len + i], 0L);
+			T_EQ("failed authentication zeroes plaintext", msg[wire_header_len + i],
+			     0L);
 		}
 
 		/* Now answer it. */
@@ -820,9 +821,8 @@ void test_matter_exchange(void)
 		     MATTER_OK);
 
 		/* B is established SECOND and must not disturb A. */
-		T_EQ("B opens its own", matter_exchange_recv(&xb, msg_b, sealed_b, &in, pt,
-							     sizeof(pt)),
-		     MATTER_OK);
+		T_EQ("B opens its own",
+		     matter_exchange_recv(&xb, msg_b, sealed_b, &in, pt, sizeof(pt)), MATTER_OK);
 		T_EQ("B's opcode", in.opcode, 0x02L);
 		T_EQ("A still opens its own AFTER B was established",
 		     matter_exchange_recv(&xa, msg_a, sealed_a, &in, pt, sizeof(pt)), MATTER_OK);
@@ -894,8 +894,8 @@ void test_matter_exchange(void)
 		ph.exchange_id = 0x7777u;
 		ph.protocol_id = MATTER_PROTOCOL_INTERACTION_MODEL;
 		plain_len = 0u;
-		T_EQ("proto header", matter_proto_header_encode(&ph, plain, sizeof(plain), &plain_len),
-		     MATTER_OK);
+		T_EQ("proto header",
+		     matter_proto_header_encode(&ph, plain, sizeof(plain), &plain_len), MATTER_OK);
 		memset(&mh, 0, sizeof(mh));
 		mh.flags = MATTER_MSG_DSIZ_NONE;
 		mh.session_id = 0xABCDu;
@@ -930,7 +930,8 @@ void test_matter_exchange(void)
 			     matter_proto_header_decode(pt, opened, &rph, &rph_len), MATTER_OK);
 			T_OK("marked initiator", (rph.exchange_flags & MATTER_EX_FLAG_I) != 0u);
 			T_EQ("our exchange id, not the peer's", rph.exchange_id, 0x0042L);
-			T_OK("asks to be acknowledged", (rph.exchange_flags & MATTER_EX_FLAG_R) != 0u);
+			T_OK("asks to be acknowledged",
+			     (rph.exchange_flags & MATTER_EX_FLAG_R) != 0u);
 			/*
 			 * An ack names a counter WITHIN an exchange, so carrying
 			 * the peer's pending ack out on an exchange it never saw
@@ -1066,6 +1067,39 @@ static void t_matter_exchange_initiator_session(void)
 	     matter_exchange_ack_initiator(&x, 0x0055u, out, sizeof(out), &out_len),
 	     MATTER_E_STATE);
 
+	t_group("an initiator continuation piggybacks its acknowledgement");
+
+	mh.message_counter = 4243u;
+	T_EQ("another peer response seals",
+	     matter_crypto_seal(&mh, keys.i2r, MATTER_PASE_NODE_ID, plain, plain_len, msg,
+				sizeof(msg), &sealed),
+	     MATTER_OK);
+	T_EQ("and is accepted", matter_exchange_recv(&x, msg, sealed, &in, pt, sizeof(pt)),
+	     MATTER_OK);
+	T_OK("an ack is owed again", x.ack_pending);
+	T_EQ("the continuation frames",
+	     matter_exchange_continue_initiator(&x, 0x0055u, MATTER_PROTOCOL_INTERACTION_MODEL,
+						0x09u, body, sizeof(body), out, sizeof(out),
+						&out_len),
+	     MATTER_OK);
+	T_EQ("and the peer opens it",
+	     matter_crypto_open(out, out_len, keys.r2i, MATTER_PASE_NODE_ID, &got, pt, sizeof(pt),
+				&opened),
+	     MATTER_OK);
+	{
+		struct matter_proto_header rph;
+		size_t rph_len = 0u;
+
+		T_EQ("its proto header decodes",
+		     matter_proto_header_decode(pt, opened, &rph, &rph_len), MATTER_OK);
+		T_EQ("it carries the requested opcode", (long)rph.opcode, 0x09L);
+		T_OK("it remains the initiator", (rph.exchange_flags & MATTER_EX_FLAG_I) != 0u);
+		T_OK("it is reliable", (rph.exchange_flags & MATTER_EX_FLAG_R) != 0u);
+		T_OK("it carries the pending ack", (rph.exchange_flags & MATTER_EX_FLAG_A) != 0u);
+		T_EQ("for the peer response", (long)rph.ack_counter, 4243L);
+	}
+	T_OK("the piggybacked ack is consumed", !x.ack_pending);
+
 	t_group("initiator and responder, both real, talking to each other");
 	{
 		/*
@@ -1110,8 +1144,7 @@ static void t_matter_exchange_initiator_session(void)
 		 */
 		memcpy(keys_i.i2r, keys_r.r2i, MATTER_KEY_LEN);
 		memcpy(keys_i.r2i, keys_r.i2r, MATTER_KEY_LEN);
-		memcpy(keys_i.attestation_challenge, keys_r.attestation_challenge,
-		       MATTER_KEY_LEN);
+		memcpy(keys_i.attestation_challenge, keys_r.attestation_challenge, MATTER_KEY_LEN);
 
 		memset(&ini, 0, sizeof(ini));
 		memset(&res, 0, sizeof(res));
@@ -1126,9 +1159,8 @@ static void t_matter_exchange_initiator_session(void)
 
 		T_EQ("the initiator sends first, which is the whole point",
 		     matter_exchange_send_initiator(&ini, 0x0077u,
-						    MATTER_PROTOCOL_INTERACTION_MODEL, 0x08u,
-						    k_req, sizeof(k_req), wire, sizeof(wire),
-						    &wire_len),
+						    MATTER_PROTOCOL_INTERACTION_MODEL, 0x08u, k_req,
+						    sizeof(k_req), wire, sizeof(wire), &wire_len),
 		     MATTER_OK);
 
 		/*
@@ -1137,7 +1169,8 @@ static void t_matter_exchange_initiator_session(void)
 		 * runner instead of printing a FAIL row. A test that segfaults
 		 * on regression reports nothing about what regressed.
 		 */
-		rc_loop = matter_exchange_recv(&res, wire, wire_len, &got_req, plain, sizeof(plain));
+		rc_loop =
+			matter_exchange_recv(&res, wire, wire_len, &got_req, plain, sizeof(plain));
 		T_EQ("and a real responder accepts it", rc_loop, MATTER_OK);
 		if (rc_loop == MATTER_OK) {
 			T_EQ("with the opcode intact", got_req.opcode, 0x08L);
@@ -1156,15 +1189,15 @@ static void t_matter_exchange_initiator_session(void)
 		     MATTER_OK);
 		T_OK("having paid the acknowledgement it owed", !res.ack_pending);
 
-		rc_loop = matter_exchange_recv(&ini, wire, wire_len, &got_rsp, plain, sizeof(plain));
+		rc_loop =
+			matter_exchange_recv(&ini, wire, wire_len, &got_rsp, plain, sizeof(plain));
 		T_EQ("and the initiator accepts that", rc_loop, MATTER_OK);
 		if (rc_loop != MATTER_OK) {
 			got_rsp.opcode = 0;
 			got_rsp.carries_ack = false;
 		} else {
 			T_EQ("with its opcode", got_rsp.opcode, 0x09L);
-			T_OK("and its payload",
-			     memcmp(got_rsp.payload, k_rsp, sizeof(k_rsp)) == 0);
+			T_OK("and its payload", memcmp(got_rsp.payload, k_rsp, sizeof(k_rsp)) == 0);
 		}
 		/*
 		 * The reply carried the responder's ack. An initiator that could
@@ -1235,7 +1268,8 @@ static void t_matter_exchange_ack_for_self_initiated(void)
 
 	matter_exchange_init(&x, SEED, true);
 	n = inbound_ok(msg, sizeof(msg), 0x20u, 3u, NULL, 0u);
-	T_EQ("PASE message first", matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)), MATTER_OK);
+	T_EQ("PASE message first", matter_exchange_recv(&x, msg, n, &in, pt, sizeof(pt)),
+	     MATTER_OK);
 	T_EQ("promote", matter_exchange_promote(&x, 0xABCDu, 0x1234u, &keys, 0x5EEDu), MATTER_OK);
 
 	/* The peer's own exchange, live, so the ack below is genuinely on a
@@ -1346,13 +1380,13 @@ static void t_matter_tx_pool(void)
 	T_OK("retry preserves token, length, and bytes",
 	     a->state == MATTER_TX_SLOT_READY && a->token == a_token && a->len == 5u &&
 		     memcmp(a->data, "first", 5u) == 0);
-	T_OK("retry remains owned before expiry",
-	     matter_tx_pool_expired(&pool, 1u, 1099u) == NULL);
+	T_OK("retry remains owned before expiry", matter_tx_pool_expired(&pool, 1u, 1099u) == NULL);
 	T_EQ("retry packet can be accepted again", matter_tx_slot_in_flight(a), MATTER_OK);
 	T_OK("next ready skips in-flight", matter_tx_pool_ready(&pool, 1u) == b);
 	T_EQ("wrong completion rejected", matter_tx_pool_complete(&pool, 0xDEADBEEFu),
 	     MATTER_E_STATE);
-	T_EQ("transport completion frees first", matter_tx_pool_complete(&pool, a_token), MATTER_OK);
+	T_EQ("transport completion frees first", matter_tx_pool_complete(&pool, a_token),
+	     MATTER_OK);
 	T_EQ("duplicate completion rejected", matter_tx_pool_complete(&pool, a_token),
 	     MATTER_E_STATE);
 	a = matter_tx_pool_acquire(&pool, 2u);
@@ -1368,8 +1402,7 @@ static void t_matter_tx_pool(void)
 	T_EQ("retry accepted before deadline", matter_tx_slot_in_flight(a), MATTER_OK);
 	T_EQ("second failure does not extend deadline",
 	     matter_tx_pool_retry(&pool, a_token, 500u, 1000u), MATTER_OK);
-	T_OK("expired at original wrapped deadline",
-	     matter_tx_pool_expired(&pool, 2u, 744u) == a);
+	T_OK("expired at original wrapped deadline", matter_tx_pool_expired(&pool, 2u, 744u) == a);
 	T_EQ("expired retry can be released", matter_tx_pool_reject(&pool, a_token), MATTER_OK);
 	a = matter_tx_pool_acquire(&pool, 2u);
 	T_OK("freed slot is reusable", a != NULL);
@@ -1378,8 +1411,7 @@ static void t_matter_tx_pool(void)
 	a = matter_tx_pool_acquire(&pool, 2u);
 	T_OK("cancelled slot can be reused", a != NULL);
 	T_EQ("zero length cannot publish", matter_tx_slot_commit(a, 0u), MATTER_E_INVAL);
-	T_EQ("oversize cannot publish", matter_tx_slot_commit(a, a->capacity + 1u),
-	     MATTER_E_INVAL);
+	T_EQ("oversize cannot publish", matter_tx_slot_commit(a, a->capacity + 1u), MATTER_E_INVAL);
 	T_EQ("queued transport rejection frees second", matter_tx_pool_reject(&pool, b_token),
 	     MATTER_OK);
 
@@ -1405,11 +1437,11 @@ static void t_matter_tx_pool(void)
 		memcpy(owned + MATTER_EXCHANGE_HEADER_MAX, payload, sizeof(payload));
 		T_EQ("overlapping payload frames",
 		     matter_exchange_send(&x, MATTER_PROTOCOL_INTERACTION_MODEL, 0x05u,
-				  owned + MATTER_EXCHANGE_HEADER_MAX, sizeof(payload), owned,
-				  sizeof(owned), &framed),
+					  owned + MATTER_EXCHANGE_HEADER_MAX, sizeof(payload),
+					  owned, sizeof(owned), &framed),
 		     MATTER_OK);
-		T_EQ("message header decodes", matter_msg_header_decode(owned, framed, &mh, &mh_len),
-		     MATTER_OK);
+		T_EQ("message header decodes",
+		     matter_msg_header_decode(owned, framed, &mh, &mh_len), MATTER_OK);
 		T_EQ("protocol header decodes",
 		     matter_proto_header_decode(owned + mh_len, framed - mh_len, &ph, &ph_len),
 		     MATTER_OK);

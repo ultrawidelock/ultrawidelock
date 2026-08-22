@@ -215,98 +215,6 @@ int matter_case_client_sigma2_decode(const uint8_t *tlv, size_t len,
 	return MATTER_OK;
 }
 
-/* Certificate signature tag (credentials/CHIPCert.h:68-78). */
-#define CERT_TAG_SIGNATURE 11u
-
-/** TLV end-of-container, which matter_tlv.c keeps to itself (ET_END_CONTAINER). */
-#define TLV_END_CONTAINER 0x18u
-
-/**
- * Is @p cert signed by @p issuer_pub?
- *
- * A Matter certificate's signature covers the certificate with its own
- * signature element removed -- so the bytes that were signed are this
- * certificate up to where tag 11 begins, closed with an end marker. Certificate
- * TLV is required to be canonical precisely so that reconstruction is
- * byte-exact, and every property this relies on is CHECKED rather than assumed:
- * the signature is the last element, it is 64 bytes, and its header is the
- * three canonical bytes for a context-tagged octet string of that length. A
- * certificate encoded any other way is refused, because a signature computed
- * over a re-encoding of it would verify against nothing.
- *
- * WHY THIS IS HERE and not in matter_fabric.c beside matter_cert_parse(): only
- * a client verifies a chain. A commissioner does not lie to itself about a NOC
- * it just minted (see matter_fabric.h), so keeping this in the client file is
- * what makes an image without the client byte for byte the one before it.
- *
- * @return MATTER_OK, MATTER_E_ACCESS when the signature does not verify,
- *         MATTER_E_INVAL for a certificate this cannot reconstruct, or
- *         MATTER_E_NOSPACE.
- */
-static int cert_verify(const uint8_t *cert, size_t len,
-		       const uint8_t issuer_pub[MATTER_CASE_PUBKEY_LEN], uint8_t *scratch,
-		       size_t scratch_cap)
-{
-	struct matter_tlv_reader r;
-	const uint8_t *sig = NULL;
-	size_t sig_len = 0u;
-	size_t sig_off;
-	int rc;
-
-	matter_tlv_reader_init(&r, cert, len);
-	if (matter_tlv_next(&r) != MATTER_OK || !matter_tlv_is_container(&r)) {
-		return MATTER_E_INVAL;
-	}
-	rc = matter_tlv_enter(&r);
-	if (rc != MATTER_OK) {
-		return rc;
-	}
-	for (;;) {
-		rc = matter_tlv_next(&r);
-		if (rc == MATTER_END) {
-			break;
-		}
-		if (rc != MATTER_OK) {
-			return rc;
-		}
-		if (matter_tlv_tag(&r) == MATTER_TLV_CTX(CERT_TAG_SIGNATURE) &&
-		    matter_tlv_get_bytes(&r, &sig, &sig_len) != MATTER_OK) {
-			return MATTER_E_TYPE;
-		}
-	}
-	if (sig == NULL || sig_len != MATTER_CASE_SIG_LEN) {
-		return MATTER_E_INVAL;
-	}
-
-	/*
-	 * The signature must be the LAST element: its value has to end exactly
-	 * one byte before the buffer does, and that byte has to be the
-	 * structure's end marker. Anything else and the span reconstructed below
-	 * is not the span that was signed.
-	 */
-	if ((sig + sig_len) != (cert + len - 1u) || cert[len - 1u] != TLV_END_CONTAINER) {
-		return MATTER_E_INVAL;
-	}
-	/* Control byte 0x30 = octet string, one-byte length, context tag. */
-	sig_off = (size_t)(sig - cert);
-	if (sig_off < 3u || cert[sig_off - 3u] != 0x30u || cert[sig_off - 2u] != CERT_TAG_SIGNATURE ||
-	    cert[sig_off - 1u] != MATTER_CASE_SIG_LEN) {
-		return MATTER_E_INVAL;
-	}
-	sig_off -= 3u;
-
-	if ((sig_off + 1u) > scratch_cap) {
-		return MATTER_E_NOSPACE;
-	}
-	memcpy(scratch, cert, sig_off);
-	scratch[sig_off] = TLV_END_CONTAINER;
-
-	if (matter_case_verify(issuer_pub, scratch, sig_off + 1u, sig) != 0) {
-		return MATTER_E_ACCESS;
-	}
-	return MATTER_OK;
-}
-
 /**
  * Open a Sigma2: derive the ECDH secret and S2K, decrypt TBEData2, rebuild and check the signature
  * over TBSData2, walk the peer's chain up to the fabric root, and require the NOC to name the node
@@ -465,7 +373,8 @@ int matter_case_client_sigma2_open(const struct matter_case_client_sigma2_in *in
 	if (icac != NULL && icac_len > 0u) {
 		struct matter_cert_info issuer;
 
-		rc = cert_verify(icac, icac_len, in->root_pub, s_rebuild, sizeof(s_rebuild));
+		rc = matter_case_cert_verify(icac, icac_len, in->root_pub, s_rebuild,
+					     sizeof(s_rebuild));
 		if (rc != MATTER_OK) {
 			return rc;
 		}
@@ -473,9 +382,11 @@ int matter_case_client_sigma2_open(const struct matter_case_client_sigma2_in *in
 		    !issuer.have_public_key) {
 			return MATTER_E_INVAL;
 		}
-		rc = cert_verify(noc, noc_len, issuer.public_key, s_rebuild, sizeof(s_rebuild));
+		rc = matter_case_cert_verify(noc, noc_len, issuer.public_key, s_rebuild,
+					     sizeof(s_rebuild));
 	} else {
-		rc = cert_verify(noc, noc_len, in->root_pub, s_rebuild, sizeof(s_rebuild));
+		rc = matter_case_cert_verify(noc, noc_len, in->root_pub, s_rebuild,
+					     sizeof(s_rebuild));
 	}
 	if (rc != MATTER_OK) {
 		return rc;

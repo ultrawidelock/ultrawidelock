@@ -128,6 +128,10 @@ struct matter_binding_table {
 int matter_binding_write(struct matter_binding_table *t, uint8_t fabric_index, const uint8_t *tlv,
 			 size_t len);
 
+/** Append one encoded TargetStruct as a Matter list AppendItem operation. */
+int matter_binding_append(struct matter_binding_table *t, uint8_t fabric_index,
+			  const uint8_t *tlv, size_t len);
+
 /**
  * Encode one fabric's entries as the Binding attribute's value.
  *

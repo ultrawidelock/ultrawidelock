@@ -17,6 +17,8 @@
  */
 #include <string.h>
 
+#include "ultrawidelock_hash.h"
+#include "matter_case.h"
 #include "matter_clusters.h"
 #include "matter_fabric.h"
 #include "matter_im.h"
@@ -101,6 +103,56 @@ void test_matter_fabric(void)
 	T_OK("public key is uncompressed", info.public_key[0] == 0x04u);
 	T_OK("public key is the certificate's",
 	     memcmp(info.public_key, k_node01_pubkey, sizeof(k_node01_pubkey)) == 0);
+	{
+		static const uint8_t chip_tbs_sha256[32] = {
+			0xad, 0xe1, 0xa1, 0x06, 0x1a, 0xd6, 0xfe, 0x55, 0xac, 0x5d, 0x8a,
+			0xdb, 0x56, 0x22, 0x7a, 0x8c, 0x26, 0x65, 0x33, 0x3c, 0x40, 0xdc,
+			0x59, 0x9e, 0x86, 0x11, 0x7c, 0x1f, 0x9e, 0xc2, 0xe6, 0x99,
+		};
+		uint8_t tbs[512];
+		uint8_t digest[32];
+		const uint8_t *signature;
+		size_t tbs_len = 0u;
+		struct ultrawidelock_sha256 hash;
+
+		T_EQ("certificate converts to canonical X.509 TBS",
+		     matter_case_cert_tbs(k_node01, sizeof(k_node01), tbs, sizeof(tbs), &tbs_len,
+					  &signature),
+		     MATTER_OK);
+		T_EQ("canonical TBS has CHIP's length", (long)tbs_len, 394L);
+		ultrawidelock_sha256_init(&hash);
+		ultrawidelock_sha256_update(&hash, tbs, tbs_len);
+		ultrawidelock_sha256_final(&hash, digest);
+		T_OK("canonical TBS is byte-identical to CHIP",
+		     memcmp(digest, chip_tbs_sha256, sizeof(digest)) == 0);
+		T_OK("signature is borrowed from the certificate",
+		     signature >= k_node01 &&
+			     signature + MATTER_CASE_SIG_LEN <= k_node01 + sizeof(k_node01));
+	}
+
+	t_group("CASE authenticated tags");
+	{
+		uint8_t cert[160];
+		struct matter_tlv_writer w;
+		size_t cert_len = 0u;
+
+		matter_tlv_writer_init(&w, cert, sizeof(cert));
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(6u), MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(17u), UINT64_C(0x1234));
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(21u), UINT64_C(0x5678));
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(22u), UINT64_C(0x27730001));
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(22u), UINT64_C(0xABCD0002));
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(9u), k_node01_pubkey,
+					   sizeof(k_node01_pubkey));
+		(void)matter_tlv_end_container(&w);
+		T_EQ("certificate builds", matter_tlv_writer_finish(&w, &cert_len), MATTER_OK);
+		T_EQ("certificate parses", matter_cert_parse(cert, cert_len, &info), MATTER_OK);
+		T_EQ("both CATs retained", (long)info.cat_count, 2L);
+		T_OK("first CAT is exact", info.cats[0] == UINT32_C(0x27730001));
+		T_OK("second CAT is exact", info.cats[1] == UINT32_C(0xABCD0002));
+	}
 
 	t_group("a root certificate");
 
@@ -382,7 +434,8 @@ void test_matter_addnoc(void)
 	T_EQ("verdict is Ok", dev.last_noc_status, MATTER_NOC_STATUS_OK);
 	T_EQ("fabric index is 1", dev.fabrics[0].index, 1);
 	T_OK("node id taken from the NOC", dev.fabrics[0].node_id == UINT64_C(0xDEDEDEDE00010001));
-	T_OK("fabric id taken from the NOC", dev.fabrics[0].fabric_id == UINT64_C(0xFAB000000000001D));
+	T_OK("fabric id taken from the NOC",
+	     dev.fabrics[0].fabric_id == UINT64_C(0xFAB000000000001D));
 	T_EQ("the NOC is kept whole", dev.fabrics[0].noc_len, sizeof(k_node01));
 	T_OK("and kept verbatim", memcmp(dev.fabrics[0].noc, k_node01, sizeof(k_node01)) == 0);
 	T_EQ("no ICAC, as Apple sends none", dev.fabrics[0].icac_len, 0);
@@ -525,8 +578,8 @@ void test_matter_addnoc(void)
 		T_EQ("its ACL is cleared", dev.fabric_acls[1].len, 0u);
 		T_EQ("its shared ICAC ownership is cleared", dev.icac.owner_index, 0u);
 		T_EQ("the committed Apple Thread dataset is restored", g_thread_start_calls, 1u);
-		T_EQ("and Apple's operational service is republished",
-		     g_thread_advertise_calls, 1u);
+		T_EQ("and Apple's operational service is republished", g_thread_advertise_calls,
+		     1u);
 		T_OK("the attempt is disarmed", !dev.attempt.active);
 	}
 
@@ -679,19 +732,20 @@ void test_matter_addnoc(void)
  * deliberately NOT first, so finding it exercises the walk rather than an
  * index. Every key here is obviously fake.
  */
-static const uint8_t k_dataset[] = {
-	0x0E, 0x08, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, /* active timestamp */
-	0x00, 0x03, 0x00, 0x00, 0x0F,                               /* channel 15 */
-	0x35, 0x06, 0x00, 0x04, 0x00, 0x1F, 0xFF, 0xE0,             /* channel mask */
-	0x02, 0x08, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, /* extended PAN id */
-	0x05, 0x10, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, /* network key */
-	0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0x03, 0x08,
-	'o',  'p',  'e',  'n',  'a',  'l',  'i',  'r', /* network name */
-	0x01, 0x02, 0x12, 0x34,                                     /* PAN id */
-	0x07, 0x08, 0xFD, 0x00, 0x0D, 0xB8, 0x00, 0x00, 0x00, 0x00, /* mesh-local prefix */
-	0x04, 0x10, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, /* PSKc */
-	0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB,
-	0x0C, 0x04, 0x02, 0xA0, 0xFF, 0xF8, /* security policy */
+static const uint8_t k_dataset[] =
+	{
+		0x0E, 0x08, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, /* active timestamp */
+		0x00, 0x03, 0x00, 0x00, 0x0F,                               /* channel 15 */
+		0x35, 0x06, 0x00, 0x04, 0x00, 0x1F, 0xFF, 0xE0,             /* channel mask */
+		0x02, 0x08, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, /* extended PAN id */
+		0x05, 0x10, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, /* network key */
+		0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0x03, 0x08,
+		'o',  'p',  'e',  'n',  'a',  'l',  'i',  'r',              /* network name */
+		0x01, 0x02, 0x12, 0x34,                                     /* PAN id */
+		0x07, 0x08, 0xFD, 0x00, 0x0D, 0xB8, 0x00, 0x00, 0x00, 0x00, /* mesh-local prefix */
+		0x04, 0x10, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, /* PSKc */
+		0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0x0C, 0x04,
+		0x02, 0xA0, 0xFF, 0xF8, /* security policy */
 };
 
 static const uint8_t k_xpanid[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33};
@@ -773,11 +827,10 @@ void test_matter_network(void)
 		 * the buffer, and no extended PAN id may be claimed. */
 		static const uint8_t runaway[] = {0x0E, 0x08, 0x00, 0x02, 0x40};
 		static const uint8_t incomplete[] = {
-			0x00, 0x03, 0x00, 0x00, 0x0F,
-			0x01, 0x02, 0x12, 0x34,
-			0x02, 0x08, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33,
-			0x05, 0x10, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
-			0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+			0x00, 0x03, 0x00, 0x00, 0x0F, 0x01, 0x02, 0x12, 0x34, 0x02,
+			0x08, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, 0x05,
+			0x10, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+			0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
 		};
 		uint8_t empty[1] = {0};
 
@@ -923,8 +976,7 @@ void test_matter_network(void)
 		 * waiting 20 s to say so would block the commissioner for
 		 * nothing. */
 		T_EQ("without waiting at all", g_thread_wait_calls, 0);
-		T_OK("the possibly partial apply is rollback-owned",
-		     dev.attempt.thread_applied);
+		T_OK("the possibly partial apply is rollback-owned", dev.attempt.thread_applied);
 		matter_clusters_failsafe_expire(&dev);
 		T_EQ("and fail-safe expiry clears it", g_thread_clear_calls, 1);
 	}

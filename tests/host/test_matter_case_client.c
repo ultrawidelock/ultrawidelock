@@ -62,45 +62,55 @@ static void make_priv(uint8_t priv[32], uint8_t seed)
  * Build a Matter operational certificate the way a commissioner does, signed by
  * @p issuer_priv.
  *
- * The signature covers the certificate with its own signature element removed,
- * so this writes elements 1..10, signs those bytes, and then splices the
- * signature in before the end marker -- the exact inverse of what
- * matter_case_client.c's cert_verify() does to get them back. Getting that
- * inverse wrong in BOTH places the same way would hide a bug, which is why the
- * splice is written out here by hand rather than by calling anything shared.
+ * Matter carries the certificate as TLV, but its signature covers the canonical
+ * X.509 DER TBSCertificate. A zero signature first makes the TLV structurally
+ * complete; matter_case_cert_tbs() then supplies the independent signed form
+ * and the placeholder is replaced with the toy signature.
  */
 static size_t build_cert(uint8_t *buf, size_t cap, uint64_t node_id, uint64_t fabric_id,
 			 const uint8_t *subject_pub, const uint8_t *issuer_priv)
 {
-	uint8_t sig[MATTER_CASE_SIG_LEN];
+	uint8_t sig[MATTER_CASE_SIG_LEN] = {0};
+	uint8_t der[512];
+	const uint8_t *sig_at;
 	struct matter_tlv_writer w;
-	size_t tbs = 0u;
-	size_t n;
+	size_t der_len = 0u;
+	size_t n = 0u;
+	static const uint8_t serial[] = {1u};
+	static const uint8_t key_id[20] = {1u};
 
 	matter_tlv_writer_init(&w, buf, cap);
 	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(1u), serial, sizeof(serial));
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2u), 1u);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(3u), MATTER_TLV_LIST);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(20u), 1u);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(4u), 1u);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(5u), 0u);
 	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(CERT_TAG_SUBJECT), MATTER_TLV_LIST);
 	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(DN_TAG_NODE_ID), node_id);
 	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(DN_TAG_FABRIC_ID), fabric_id);
 	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(7u), 1u);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(8u), 1u);
 	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(CERT_TAG_PUBLIC_KEY), subject_pub,
 				   MATTER_CASE_PUBKEY_LEN);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(10u), MATTER_TLV_LIST);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(1u), MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bool(&w, MATTER_TLV_CTX(1u), false);
 	(void)matter_tlv_end_container(&w);
-	T_EQ("cert body encodes", matter_tlv_writer_finish(&w, &tbs), MATTER_OK);
-
-	T_EQ("issuer signs it", matter_case_sign(issuer_priv, buf, tbs, sig), 0);
-
-	/* buf[tbs - 1] is the structure's end marker; the signature element goes
-	 * in front of it. Control byte 0x30 = octet string, one-byte length,
-	 * context tag. */
-	n = tbs - 1u;
-	T_OK("cert fits", (n + 3u + sizeof(sig) + 1u) <= cap);
-	buf[n++] = 0x30u;
-	buf[n++] = CERT_TAG_SIGNATURE;
-	buf[n++] = (uint8_t)sizeof(sig);
-	memcpy(&buf[n], sig, sizeof(sig));
-	n += sizeof(sig);
-	buf[n++] = 0x18u;
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2u), 1u);
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(4u), key_id, sizeof(key_id));
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(5u), key_id, sizeof(key_id));
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(CERT_TAG_SIGNATURE), sig, sizeof(sig));
+	(void)matter_tlv_end_container(&w);
+	T_EQ("certificate encodes", matter_tlv_writer_finish(&w, &n), MATTER_OK);
+	T_EQ("certificate converts to X.509 TBS",
+	     matter_case_cert_tbs(buf, n, der, sizeof(der), &der_len, &sig_at), MATTER_OK);
+	T_EQ("issuer signs DER TBS", matter_case_sign(issuer_priv, der, der_len, sig), 0);
+	memcpy((uint8_t *)sig_at, sig, sizeof(sig));
 	return n;
 }
 
@@ -255,8 +265,8 @@ void test_matter_case_client(void)
 	n1 = client_sigma1(s1, sizeof(s1), k_peer_node);
 
 	T_EQ("it decodes", matter_case_sigma1_decode(s1, n1, &got1), MATTER_OK);
-	T_OK("the random survives", memcmp(got1.initiator_random, s_init_random,
-					  sizeof(s_init_random)) == 0);
+	T_OK("the random survives",
+	     memcmp(got1.initiator_random, s_init_random, sizeof(s_init_random)) == 0);
 	T_OK("so does the ephemeral key",
 	     memcmp(got1.initiator_pubkey, s_init_pub, sizeof(s_init_pub)) == 0);
 	T_EQ("and the session id", (int)got1.initiator_session_id, 0x1234);
@@ -433,28 +443,30 @@ void test_matter_case_client(void)
 	open_in.peer_node_id = k_peer_node;
 
 	T_EQ("sigma1 into a buffer too small",
-	     matter_case_client_sigma1_encode(&(struct matter_case_client_sigma1_in){
-						      .ipk = s_ipk,
-						      .root_pub = s_root_pub,
-						      .initiator_random = s_init_random,
-						      .initiator_eph_pub = s_init_pub,
-					      },
-					      s1, 16u, &n3),
+	     matter_case_client_sigma1_encode(
+		     &(struct matter_case_client_sigma1_in){
+			     .ipk = s_ipk,
+			     .root_pub = s_root_pub,
+			     .initiator_random = s_init_random,
+			     .initiator_eph_pub = s_init_pub,
+		     },
+		     s1, 16u, &n3),
 	     MATTER_E_NOSPACE);
 	T_EQ("sigma1 with no IPK",
-	     matter_case_client_sigma1_encode(&(struct matter_case_client_sigma1_in){
-						      .root_pub = s_root_pub,
-						      .initiator_random = s_init_random,
-						      .initiator_eph_pub = s_init_pub,
-					      },
-					      s1, sizeof(s1), &n3),
+	     matter_case_client_sigma1_encode(
+		     &(struct matter_case_client_sigma1_in){
+			     .root_pub = s_root_pub,
+			     .initiator_random = s_init_random,
+			     .initiator_eph_pub = s_init_pub,
+		     },
+		     s1, sizeof(s1), &n3),
 	     MATTER_E_INVAL);
 
 	T_EQ("a Sigma2 that is not TLV at all",
 	     matter_case_client_sigma2_decode((const uint8_t *)"\x01\x02", 2u, &got2),
 	     MATTER_E_TYPE);
-	T_EQ("a Sigma2 truncated mid-message",
-	     matter_case_client_sigma2_decode(s2, n2 / 2u, &got2), MATTER_E_TRUNC);
+	T_EQ("a Sigma2 truncated mid-message", matter_case_client_sigma2_decode(s2, n2 / 2u, &got2),
+	     MATTER_E_TRUNC);
 
 	/* A ciphertext no longer than its own authentication tag. Caught in the
 	 * decoder, because the open path would subtract past zero. */
@@ -490,15 +502,16 @@ void test_matter_case_client(void)
 	}
 
 	T_EQ("a Sigma3 with no NOC to send",
-	     matter_case_client_sigma3_encode(&(struct matter_case_client_sigma3_in){
-						      .shared = srv_shared,
-						      .ipk = s_ipk,
-						      .transcript_hash = t1,
-						      .initiator_eph_pub = s_init_pub,
-						      .responder_eph_pub = s_resp_pub,
-						      .op_priv = s_self.priv,
-					      },
-					      s3, sizeof(s3), &n3),
+	     matter_case_client_sigma3_encode(
+		     &(struct matter_case_client_sigma3_in){
+			     .shared = srv_shared,
+			     .ipk = s_ipk,
+			     .transcript_hash = t1,
+			     .initiator_eph_pub = s_init_pub,
+			     .responder_eph_pub = s_resp_pub,
+			     .op_priv = s_self.priv,
+		     },
+		     s3, sizeof(s3), &n3),
 	     MATTER_E_INVAL);
 	T_EQ("session keys with nowhere to put them",
 	     matter_case_client_keys(srv_shared, s_ipk, t1, NULL), MATTER_E_INVAL);

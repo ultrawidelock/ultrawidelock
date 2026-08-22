@@ -258,8 +258,8 @@ struct matter_tx_pool {
 };
 
 /** Attach @p n_slots equally sized buffers to a fresh outbound pool. */
-int matter_tx_pool_init(struct matter_tx_pool *pool, struct matter_tx_slot *slots,
-			uint8_t *backing, size_t n_slots, size_t slot_capacity);
+int matter_tx_pool_init(struct matter_tx_pool *pool, struct matter_tx_slot *slots, uint8_t *backing,
+			size_t n_slots, size_t slot_capacity);
 
 /** Reserve a free slot for one transport. NULL means the bounded pool is full. */
 struct matter_tx_slot *matter_tx_pool_acquire(struct matter_tx_pool *pool, uint8_t transport);
@@ -425,6 +425,12 @@ int matter_exchange_send_initiator(struct matter_exchange *x, uint16_t exchange_
 				   uint16_t protocol_id, uint8_t opcode, const uint8_t *payload,
 				   size_t payload_len, uint8_t *out, size_t cap, size_t *out_len);
 
+/** Continue an exchange this node initiated and piggyback the pending MRP ack. */
+int matter_exchange_continue_initiator(struct matter_exchange *x, uint16_t exchange_id,
+				       uint16_t protocol_id, uint8_t opcode, const uint8_t *payload,
+				       size_t payload_len, uint8_t *out, size_t cap,
+				       size_t *out_len);
+
 int matter_exchange_send(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode,
 			 const uint8_t *payload, size_t payload_len, uint8_t *out, size_t cap,
 			 size_t *out_len);
@@ -447,8 +453,7 @@ int matter_exchange_standalone_ack(struct matter_exchange *x, uint8_t *out, size
  * acknowledgement. Reusing the original ciphertext and message counter is
  * required; framing a new response would be a new MRP message, not a retry.
  */
-int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap,
-			   size_t *out_len);
+int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap, size_t *out_len);
 
 /** Secure Channel MsgType 0x10 (Constants.h). Not a PASE opcode. */
 #define MATTER_SC_OP_ACK 0x10u

@@ -56,7 +56,14 @@
 #include "ultrawidelock_port.h"
 #include "ultrawidelock_prim.h"
 
-LOG_MODULE_REGISTER(matter_client, CONFIG_ULTRAWIDELOCK_MATTER_CLIENT_LOG_LEVEL);
+/* The client shares a 433,664-byte slot with the complete lock. Keep normal
+ * images to actionable failures; overlay-client-debug.conf restores DBG for
+ * bench diagnosis. */
+#if defined(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT_LOG_LEVEL_DBG)
+LOG_MODULE_REGISTER(matter_client, LOG_LEVEL_DBG);
+#else
+LOG_MODULE_REGISTER(matter_client, LOG_LEVEL_WRN);
+#endif
 
 /**
  * Enough for the two messages this node ORIGINATES rather than replies with.
@@ -285,7 +292,8 @@ static bool choose_target(void)
 	if (s_info == NULL) {
 		return false;
 	}
-	while ((t = matter_binding_next(&s_info->binding, MATTER_CLUSTER_DOOR_LOCK, &idx)) != NULL) {
+	while ((t = matter_binding_next(&s_info->binding, MATTER_CLUSTER_DOOR_LOCK, &idx)) !=
+	       NULL) {
 		const struct matter_fabric *f = fabric_of(t->fabric_index);
 		uint8_t cfid[MATTER_COMPRESSED_FABRIC_LEN];
 
@@ -295,21 +303,18 @@ static bool choose_target(void)
 		if (matter_fabric_compressed_id(f->root_public_key, f->fabric_id, cfid) !=
 			    MATTER_OK ||
 		    matter_case_operational_ipk(f->ipk, cfid, s_ipk) != MATTER_OK) {
-			LOG_ERR("cannot derive the operational key for fabric %u", f->index);
+			LOG_ERR("fabric %u key derivation failed", f->index);
 			continue;
 		}
 		{
 			struct matter_cert_info ci;
 
-			s_have_noc_pub =
-				matter_cert_parse(f->noc, f->noc_len, &ci) == MATTER_OK &&
-				ci.have_public_key;
+			s_have_noc_pub = matter_cert_parse(f->noc, f->noc_len, &ci) == MATTER_OK &&
+					 ci.have_public_key;
 			if (s_have_noc_pub) {
 				memcpy(s_noc_pub, ci.public_key, sizeof(s_noc_pub));
 			} else {
-				LOG_WRN("fabric %u: no public key in the NOC, so the "
-					"Sigma3 signature will not be self-checked",
-					f->index);
+				LOG_DBG("fabric %u NOC has no public key", f->index);
 			}
 		}
 		s_fabric = f;
@@ -511,9 +516,8 @@ static bool send_sigma1(void)
 	}
 	s_handshake = true;
 	arm_retransmit(s_tx, hdr + payload, s_counter, now_ms());
-	LOG_INF("Sigma1 out to node 0x%08x%08x, session 0x%04x",
-		(unsigned int)(s_peer_node >> 32), (unsigned int)s_peer_node,
-		(unsigned int)s_local_session);
+	LOG_DBG("Sigma1 out to node 0x%08x%08x, session 0x%04x", (unsigned int)(s_peer_node >> 32),
+		(unsigned int)s_peer_node, (unsigned int)s_local_session);
 	return true;
 }
 
@@ -544,7 +548,7 @@ static size_t handle_sigma2(const uint8_t *payload, size_t payload_len,
 
 	rc = matter_case_client_sigma2_decode(payload, payload_len, &s2);
 	if (rc != MATTER_OK) {
-		LOG_WRN("Sigma2 unreadable (%d)", rc);
+		LOG_ERR("Sigma2 unreadable (%d)", rc);
 		return 0u;
 	}
 	/* Copied out before the transcript moves on: `s2` borrows the datagram,
@@ -572,7 +576,7 @@ static size_t handle_sigma2(const uint8_t *payload, size_t payload_len,
 		 * peer does not hold this fabric's keys, MATTER_E_ACCESS means
 		 * it holds them and is not who this node asked for.
 		 */
-		LOG_WRN("Sigma2 REJECTED (%d)%s", rc,
+		LOG_ERR("Sigma2 REJECTED (%d)%s", rc,
 			rc == MATTER_E_ACCESS ? " -- chain or identity" : "");
 		return 0u;
 	}
@@ -657,7 +661,7 @@ static size_t handle_sigma2(const uint8_t *payload, size_t payload_len,
 	/* The handshake is over; nothing below needs its private half. */
 	memset(s_eph_priv, 0, sizeof(s_eph_priv));
 
-	LOG_INF("Sigma3 out: session 0x%04x local, 0x%04x peer", (unsigned int)s_local_session,
+	LOG_DBG("Sigma3 out: session 0x%04x local, 0x%04x peer", (unsigned int)s_local_session,
 		(unsigned int)s_peer_session);
 	return hdr + s3_len;
 }
@@ -671,11 +675,10 @@ static size_t send_secure(uint8_t opcode, const uint8_t *body, size_t body_len, 
 	size_t len = 0u;
 	int rc;
 
-	rc = matter_exchange_send_initiator(&s_x, s_exchange_id,
-					    MATTER_PROTOCOL_INTERACTION_MODEL, opcode, body,
-					    body_len, out, cap, &len);
+	rc = matter_exchange_send_initiator(&s_x, s_exchange_id, MATTER_PROTOCOL_INTERACTION_MODEL,
+					    opcode, body, body_len, out, cap, &len);
 	if (rc != MATTER_OK) {
-		LOG_WRN("cannot frame opcode 0x%02x (%d)", opcode, rc);
+		LOG_DBG("cannot frame opcode 0x%02x (%d)", opcode, rc);
 		return 0u;
 	}
 	return len;
@@ -732,13 +735,19 @@ static size_t send_invoke(uint8_t *reply, size_t cap)
 		return 0u;
 	}
 
-	len = send_secure(MATTER_IM_OP_INVOKE_COMMAND_REQUEST, body, body_len, reply, cap);
+	len = 0u;
+	if (matter_exchange_continue_initiator(&s_x, s_exchange_id,
+					       MATTER_PROTOCOL_INTERACTION_MODEL,
+					       MATTER_IM_OP_INVOKE_COMMAND_REQUEST, body, body_len,
+					       reply, cap, &len) != MATTER_OK) {
+		len = 0u;
+	}
 	if (len == 0u) {
 		return 0u;
 	}
 	s_invoke_step = (uint8_t)INVOKE_SENT;
 	s_invoke_ms = now_ms();
-	LOG_INF("UnlockDoor out: endpoint %u%s", s_peer_endpoint,
+	LOG_DBG("UnlockDoor out: endpoint %u%s", s_peer_endpoint,
 		pin.pin_len > 0u ? ", with a PIN" : "");
 	return len;
 }
@@ -790,7 +799,7 @@ static bool start_resolve(void)
 	if (matter_thread_resolve(instance, on_resolved, NULL) != MATTER_OK) {
 		return false;
 	}
-	LOG_INF("resolving %s", instance);
+	LOG_DBG("resolving %s", instance);
 	return true;
 }
 
@@ -821,7 +830,7 @@ static void poll_work_fn(struct ultrawidelock_dwork *w)
 		matter_client_sm_resolved(&s_sm, true, t);
 	} else if (resolved == RESOLVE_FAIL) {
 		s_peer.valid = false;
-		LOG_INF("the bound lock did not resolve");
+		LOG_DBG("the bound lock did not resolve");
 		matter_client_sm_resolved(&s_sm, false, t);
 	}
 
@@ -832,7 +841,7 @@ static void poll_work_fn(struct ultrawidelock_dwork *w)
 	 * of somebody this node was told to forget.
 	 */
 	if (s_fabric != NULL && !fabric_still_held()) {
-		LOG_INF("the bound lock's administrator is gone; dropping the attempt");
+		LOG_DBG("bound administrator removed");
 		s_fabric = NULL;
 		if (s_session || s_handshake) {
 			drop_session();
@@ -847,7 +856,7 @@ static void poll_work_fn(struct ultrawidelock_dwork *w)
 	 */
 	if (s_invoke_step != (uint8_t)INVOKE_IDLE) {
 		if ((int32_t)(t - (s_invoke_ms + MATTER_CLIENT_STEP_MS)) >= 0) {
-			LOG_WRN("the bound lock stopped answering mid-unlock");
+			LOG_DBG("bound lock stopped answering");
 			drop_session();
 			matter_client_sm_failed(&s_sm, t);
 		} else {
@@ -925,13 +934,13 @@ static void poll_work_fn(struct ultrawidelock_dwork *w)
 		case MATTER_MRP_RETRANSMIT:
 			if (s_rtx_len != 0u &&
 			    matter_thread_send_to(&s_peer, s_rtx, s_rtx_len) == MATTER_OK) {
-				LOG_INF("handshake message resent");
+				LOG_DBG("handshake message resent");
 				arm_retransmit(s_rtx, s_rtx_len, counter, t);
 			}
 			break;
 
 		case MATTER_MRP_GIVE_UP:
-			LOG_WRN("the bound lock never acknowledged the handshake");
+			LOG_DBG("handshake not acknowledged");
 			drop_session();
 			matter_client_sm_failed(&s_sm, t);
 			break;
@@ -945,7 +954,7 @@ static void poll_work_fn(struct ultrawidelock_dwork *w)
 
 	if (s_handshake && s_sm.state != (uint8_t)MATTER_CLIENT_SIGMA1 &&
 	    s_sm.state != (uint8_t)MATTER_CLIENT_SIGMA3) {
-		LOG_INF("the bound lock never answered the handshake");
+		LOG_DBG("handshake unanswered");
 		drop_session();
 	}
 
@@ -1095,7 +1104,7 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 		ok = s_session && payload_len >= 2u && payload[0] == 0u && payload[1] == 0u;
 
 		if (ok) {
-			LOG_INF("CASE ESTABLISHED as initiator: session 0x%04x",
+			LOG_DBG("CASE ESTABLISHED as initiator: session 0x%04x",
 				(unsigned int)s_local_session);
 			/*
 			 * Say so when the session is up and nobody is waiting for
@@ -1108,9 +1117,7 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 			 * and it is not recoverable from the log without it.
 			 */
 			if (!matter_client_sm_wants(&s_sm, t)) {
-				LOG_WRN("...but the walk-up it was for has expired; "
-					"the bound lock was NOT told to unlock. The "
-					"session is kept for the next one.");
+				LOG_DBG("walk-up expired before UnlockDoor");
 			}
 			matter_client_sm_established(&s_sm);
 			/*
@@ -1132,7 +1139,7 @@ size_t matter_client_on_unsecured(const uint8_t *payload, size_t payload_len,
 				s_hs_linger_until = 1u;
 			}
 		} else {
-			LOG_WRN("the bound lock refused the handshake");
+			LOG_DBG("handshake refused");
 			drop_session();
 			matter_client_sm_failed(&s_sm, t);
 		}
@@ -1176,14 +1183,13 @@ size_t matter_client_on_secure(uint8_t *msg, size_t len, uint8_t *reply, size_t 
 		return out;
 	}
 	if (rc != MATTER_OK) {
-		LOG_WRN("client session message refused (%d)", rc);
+		LOG_DBG("client session message refused (%d)", rc);
 		ultrawidelock_mutex_unlock(&s_lock);
 		return 0u;
 	}
 
 	if (in.protocol_id == MATTER_PROTOCOL_INTERACTION_MODEL &&
-	    in.opcode == MATTER_IM_OP_STATUS_RESPONSE &&
-	    s_invoke_step == (uint8_t)INVOKE_TIMED) {
+	    in.opcode == MATTER_IM_OP_STATUS_RESPONSE && s_invoke_step == (uint8_t)INVOKE_TIMED) {
 		uint8_t status = MATTER_IM_STATUS_FAILURE;
 
 		/*
@@ -1195,7 +1201,7 @@ size_t matter_client_on_secure(uint8_t *msg, size_t len, uint8_t *reply, size_t 
 		if (matter_im_status_response_decode(in.payload, in.payload_len, &status) !=
 			    MATTER_OK ||
 		    status != MATTER_IM_STATUS_SUCCESS) {
-			LOG_WRN("the bound lock refused the timed window (status 0x%02x)", status);
+			LOG_DBG("timed window refused (0x%02x)", status);
 			s_invoke_step = (uint8_t)INVOKE_IDLE;
 			matter_client_sm_invoked(&s_sm, false);
 		} else {
@@ -1218,9 +1224,9 @@ size_t matter_client_on_secure(uint8_t *msg, size_t len, uint8_t *reply, size_t 
 		rc = matter_im_client_response_decode(in.payload, in.payload_len, &resp);
 		ok = rc == MATTER_OK && resp.status == MATTER_IM_STATUS_SUCCESS;
 		if (ok) {
-			LOG_INF("the bound lock UNLOCKED");
+			LOG_DBG("the bound lock UNLOCKED");
 		} else {
-			LOG_WRN("the bound lock refused UnlockDoor (status 0x%02x, decode %d)",
+			LOG_DBG("UnlockDoor refused (0x%02x, decode %d)",
 				rc == MATTER_OK ? resp.status : 0u, rc);
 		}
 		s_invoke_step = (uint8_t)INVOKE_IDLE;

@@ -156,6 +156,34 @@ int matter_binding_write(struct matter_binding_table *t, uint8_t fabric_index, c
 	return MATTER_OK;
 }
 
+int matter_binding_append(struct matter_binding_table *t, uint8_t fabric_index,
+			  const uint8_t *tlv, size_t len)
+{
+	struct matter_tlv_reader r;
+	struct matter_binding_target one;
+	int rc;
+
+	if (t == NULL || tlv == NULL || fabric_index == 0u) {
+		return MATTER_E_INVAL;
+	}
+	if (t->count >= MATTER_BINDING_MAX) {
+		return MATTER_E_NOSPACE;
+	}
+	matter_tlv_reader_init(&r, tlv, len);
+	if (matter_tlv_next(&r) != MATTER_OK ||
+	    matter_tlv_element_type(&r) != MATTER_TLV_STRUCTURE) {
+		return MATTER_E_TYPE;
+	}
+	memset(&one, 0, sizeof(one));
+	rc = take_target(&r, &one);
+	if (rc != MATTER_OK) {
+		return rc;
+	}
+	one.fabric_index = fabric_index;
+	t->e[t->count++] = one;
+	return MATTER_OK;
+}
+
 void matter_binding_read(const struct matter_binding_table *t, uint8_t fabric_index,
 			 struct matter_tlv_writer *w, matter_tlv_tag_t tag)
 {

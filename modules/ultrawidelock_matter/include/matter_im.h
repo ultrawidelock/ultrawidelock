@@ -124,6 +124,9 @@ struct matter_im_path {
 	bool have_endpoint;
 	bool have_cluster;
 	bool have_attribute;
+	uint16_t list_index;
+	bool have_list_index;
+	bool list_index_null;
 };
 
 /** True when any component is wildcarded (app/AttributePathParams.h:57-59). */
@@ -530,7 +533,10 @@ struct matter_im_server {
  * the same reason: a commissioner that sent two and saw one status would be
  * entitled to assume both applied.
  */
-struct matter_im_write {
+/** A bounded list transaction: ReplaceAll plus at most four appended entries. */
+#define MATTER_IM_MAX_WRITES 5u
+
+struct matter_im_write_item {
 	struct matter_im_path path;
 	/**
 	 * The value, still encoded. Points into the caller's buffer.
@@ -541,6 +547,11 @@ struct matter_im_write {
 	 */
 	const uint8_t *data;
 	size_t data_len;
+};
+
+struct matter_im_write {
+	struct matter_im_write_item items[MATTER_IM_MAX_WRITES];
+	uint8_t n_items;
 	bool suppress_response;
 	bool timed_request;
 	/**

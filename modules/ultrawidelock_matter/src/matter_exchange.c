@@ -7,8 +7,8 @@
 
 #include <string.h>
 
-int matter_tx_pool_init(struct matter_tx_pool *pool, struct matter_tx_slot *slots,
-			uint8_t *backing, size_t n_slots, size_t slot_capacity)
+int matter_tx_pool_init(struct matter_tx_pool *pool, struct matter_tx_slot *slots, uint8_t *backing,
+			size_t n_slots, size_t slot_capacity)
 {
 	if (pool == NULL || slots == NULL || backing == NULL || n_slots == 0u ||
 	    slot_capacity == 0u) {
@@ -134,16 +134,14 @@ struct matter_tx_slot *matter_tx_pool_expired(struct matter_tx_pool *pool, uint8
 		struct matter_tx_slot *slot = &pool->slots[i];
 
 		if (slot->state == MATTER_TX_SLOT_READY && slot->transport == transport &&
-		    slot->retry_deadline_set &&
-		    (int32_t)(now_ms - slot->retry_deadline_ms) >= 0) {
+		    slot->retry_deadline_set && (int32_t)(now_ms - slot->retry_deadline_ms) >= 0) {
 			return slot;
 		}
 	}
 	return NULL;
 }
 
-static int matter_tx_pool_release(struct matter_tx_pool *pool, uint32_t token,
-				  bool allow_ready)
+static int matter_tx_pool_release(struct matter_tx_pool *pool, uint32_t token, bool allow_ready)
 {
 	struct matter_tx_slot *slot = matter_tx_pool_find(pool, token);
 
@@ -403,8 +401,7 @@ static int matter_exchange_recv_impl(struct matter_exchange *x, const uint8_t *m
 	in->ack_requested = (ph.exchange_flags & MATTER_EX_FLAG_R) != 0u;
 	in->carries_ack = (ph.exchange_flags & MATTER_EX_FLAG_A) != 0u;
 	in->acked_counter = ph.ack_counter;
-	if (in->carries_ack && x->replay_len != 0u &&
-	    in->acked_counter == x->replay_out_counter) {
+	if (in->carries_ack && x->replay_len != 0u && in->acked_counter == x->replay_out_counter) {
 		x->replay_len = 0u;
 	}
 
@@ -491,8 +488,9 @@ int matter_exchange_promote(struct matter_exchange *x, uint16_t local_id, uint16
  *        does this; see matter_exchange_send_initiator().
  */
 static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode, bool reliable,
-		 bool as_initiator, uint16_t init_exchange_id, const uint8_t *payload,
-		 size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
+		 bool as_initiator, bool carry_initiator_ack, uint16_t init_exchange_id,
+		 const uint8_t *payload, size_t payload_len, uint8_t *out, size_t cap,
+		 size_t *out_len)
 {
 	struct matter_msg_header mh;
 	struct matter_proto_header ph;
@@ -568,7 +566,7 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	 * exchange never carried. The pending ack stays pending and leaves on
 	 * the exchange that owes it.
 	 */
-	if (!as_initiator && x->mrp && x->ack_pending) {
+	if ((!as_initiator || carry_initiator_ack) && x->mrp && x->ack_pending) {
 		ph.exchange_flags |= MATTER_EX_FLAG_A;
 		ph.ack_counter = x->ack_counter;
 	}
@@ -647,7 +645,7 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 	 * message this node has already handled and the exchange that owes the
 	 * ack stalls. The report going out is not the reply that was owed.
 	 */
-	if (!as_initiator) {
+	if (!as_initiator || carry_initiator_ack) {
 		x->ack_pending = false;
 	}
 
@@ -662,7 +660,7 @@ static int frame(struct matter_exchange *x, uint16_t protocol_id, uint8_t opcode
 int matter_exchange_reply(struct matter_exchange *x, uint8_t opcode, const uint8_t *payload,
 			  size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
 {
-	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, opcode, true, false, 0u, payload,
+	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, opcode, true, false, false, 0u, payload,
 		     payload_len, out, cap, out_len);
 }
 
@@ -673,7 +671,7 @@ int matter_exchange_send(struct matter_exchange *x, uint16_t protocol_id, uint8_
 			 const uint8_t *payload, size_t payload_len, uint8_t *out, size_t cap,
 			 size_t *out_len)
 {
-	return frame(x, protocol_id, opcode, true, false, 0u, payload, payload_len, out, cap,
+	return frame(x, protocol_id, opcode, true, false, false, 0u, payload, payload_len, out, cap,
 		     out_len);
 }
 
@@ -685,8 +683,20 @@ int matter_exchange_send_initiator(struct matter_exchange *x, uint16_t exchange_
 				   uint16_t protocol_id, uint8_t opcode, const uint8_t *payload,
 				   size_t payload_len, uint8_t *out, size_t cap, size_t *out_len)
 {
-	return frame(x, protocol_id, opcode, true, true, exchange_id, payload, payload_len, out,
-		     cap, out_len);
+	return frame(x, protocol_id, opcode, true, true, false, exchange_id, payload, payload_len,
+		     out, cap, out_len);
+}
+
+int matter_exchange_continue_initiator(struct matter_exchange *x, uint16_t exchange_id,
+				       uint16_t protocol_id, uint8_t opcode, const uint8_t *payload,
+				       size_t payload_len, uint8_t *out, size_t cap,
+				       size_t *out_len)
+{
+	if (x == NULL || !x->open || x->exchange_id != exchange_id || !x->ack_pending) {
+		return MATTER_E_STATE;
+	}
+	return frame(x, protocol_id, opcode, true, true, true, exchange_id, payload, payload_len,
+		     out, cap, out_len);
 }
 
 /**
@@ -702,12 +712,11 @@ int matter_exchange_standalone_ack(struct matter_exchange *x, uint8_t *out, size
 	if (!x->mrp || !x->ack_pending) {
 		return MATTER_E_STATE;
 	}
-	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, MATTER_SC_OP_ACK, false, false, 0u, NULL,
-		     0u, out, cap, out_len);
+	return frame(x, MATTER_PROTOCOL_SECURE_CHANNEL, MATTER_SC_OP_ACK, false, false, false, 0u,
+		     NULL, 0u, out, cap, out_len);
 }
 
-int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap,
-			   size_t *out_len)
+int matter_exchange_replay(struct matter_exchange *x, uint8_t *out, size_t cap, size_t *out_len)
 {
 	if (x == NULL || out == NULL || out_len == NULL) {
 		return MATTER_E_INVAL;

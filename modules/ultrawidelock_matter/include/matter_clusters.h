@@ -1110,6 +1110,9 @@ struct matter_device_info {
 	uint8_t last_network_status;
 	/** Operational node id of the CASE peer serving the current request. */
 	uint64_t accessing_node_id;
+	/** CATs authenticated from that peer's NOC during CASE. */
+	uint32_t accessing_cats[MATTER_CASE_CAT_MAX];
+	size_t accessing_cat_count;
 
 	/**
 	 * The NodeOperationalCertStatusEnum the last AddNOC produced, held for

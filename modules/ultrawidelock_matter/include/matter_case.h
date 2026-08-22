@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "matter_fabric.h"
 #include "matter_status.h"
 
 #ifdef __cplusplus
@@ -187,6 +188,8 @@ int matter_case_sigma2_encode(const struct matter_case_sigma2_in *in, uint8_t *o
 struct matter_case_sigma3_out {
 	uint64_t node_id;
 	uint64_t fabric_id;
+	uint32_t cats[MATTER_CASE_CAT_MAX];
+	size_t cat_count;
 	/** The initiator's operational public key, out of the NOC it sent. */
 	uint8_t public_key[MATTER_CASE_PUBKEY_LEN];
 };
@@ -200,6 +203,15 @@ struct matter_case_sigma3_in {
 	const uint8_t *initiator_eph_pub; /**< 65, from the Sigma1. */
 	const uint8_t *responder_eph_pub; /**< 65, the one Sigma2 carried. */
 };
+
+/** Convert a Matter certificate to the canonical X.509 DER TBSCertificate it signs. */
+int matter_case_cert_tbs(const uint8_t *cert, size_t len, uint8_t *out, size_t cap, size_t *out_len,
+			 const uint8_t **signature);
+
+/** Verify a Matter certificate under its issuer's public key. */
+int matter_case_cert_verify(const uint8_t *cert, size_t len,
+			    const uint8_t issuer_pub[MATTER_CASE_PUBKEY_LEN], uint8_t *scratch,
+			    size_t scratch_cap);
 
 /**
  * Open and check a Sigma3, the initiator's half of the same proof.
@@ -216,13 +228,9 @@ struct matter_case_sigma3_in {
  * puts the initiator's ephemeral key where Sigma2 put the responder's. Getting
  * that backwards still encodes, still decodes, and never verifies.
  *
- * WHAT THIS DOES NOT DO: it does not walk the certificate chain. The signature
- * proves the sender holds the key its NOC names, and the caller is expected to
- * compare the fabric id against its own, but nothing here checks that the NOC
- * was issued by the fabric's root. A peer that reached this point already
- * proved possession of the IPK to get its destination identifier accepted, so
- * this is a narrowing rather than a hole -- but it IS a narrowing, and a
- * complete implementation verifies the chain.
+ * The signature authenticates the NOC contents, including any CATs returned
+ * to the caller. Certificate-chain conversion and validation is outside this
+ * compact CASE implementation.
  *
  * @return MATTER_OK, MATTER_E_INVAL for a malformed message, MATTER_E_TYPE if
  *         the AEAD tag or the signature failed, MATTER_E_NOSPACE if the

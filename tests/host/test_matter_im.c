@@ -1589,6 +1589,47 @@ static size_t build_write(uint8_t *buf, size_t cap, unsigned int n_requests, boo
 	return len;
 }
 
+/** Home Assistant's canonical list update: ReplaceAll([]), then AppendItem. */
+static size_t build_binding_list_write(uint8_t *buf, size_t cap)
+{
+	struct matter_tlv_writer w;
+	size_t len = 0u;
+
+	matter_tlv_writer_init(&w, buf, cap);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bool(&w, MATTER_TLV_CTX(0), false);
+	(void)matter_tlv_put_bool(&w, MATTER_TLV_CTX(1), false);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2), MATTER_TLV_ARRAY);
+	for (uint8_t append = 0u; append < 2u; append++) {
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(0), 0u);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(1), MATTER_TLV_LIST);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(2), MATTER_ENDPOINT_LOCK);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(3), MATTER_CLUSTER_BINDING);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(4), MATTER_ATTR_BINDING_LIST);
+		if (append != 0u) {
+			(void)matter_tlv_put_null(&w, MATTER_TLV_CTX(5));
+		}
+		(void)matter_tlv_end_container(&w);
+		if (append == 0u) {
+			(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2), MATTER_TLV_ARRAY);
+		} else {
+			(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(2),
+						 MATTER_TLV_STRUCTURE);
+			(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(1), 43u);
+			(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(3), 1u);
+			(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(4),
+						 MATTER_CLUSTER_DOOR_LOCK);
+		}
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_end_container(&w);
+	}
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_writer_finish(&w, &len);
+	return len;
+}
+
 static size_t build_subscribe(uint8_t *buf, size_t cap, unsigned int n_paths, uint16_t min_s,
 			      uint16_t max_s, bool keep, bool paths_as_array)
 {
@@ -1638,10 +1679,10 @@ void test_matter_im_write(void)
 		blen = build_write(buf, sizeof(buf), 1u, true, false, false);
 		T_OK("request builds", blen > 0u);
 		T_EQ("decodes", matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
-		T_EQ("endpoint", (long)wr.path.endpoint, (long)MATTER_ENDPOINT_ROOT);
-		T_EQ("cluster", (long)wr.path.cluster, (long)MATTER_CLUSTER_ACCESS_CONTROL);
-		T_EQ("attribute", (long)wr.path.attribute, (long)MATTER_ATTR_AC_ACL);
-		T_OK("value present", wr.data != NULL && wr.data_len > 0u);
+		T_EQ("endpoint", (long)wr.items[0].path.endpoint, (long)MATTER_ENDPOINT_ROOT);
+		T_EQ("cluster", (long)wr.items[0].path.cluster, (long)MATTER_CLUSTER_ACCESS_CONTROL);
+		T_EQ("attribute", (long)wr.items[0].path.attribute, (long)MATTER_ATTR_AC_ACL);
+		T_OK("value present", wr.items[0].data != NULL && wr.items[0].data_len > 0u);
 		T_OK("response not suppressed", !wr.suppress_response);
 		T_OK("not a timed request", !wr.timed_request);
 
@@ -1687,7 +1728,8 @@ void test_matter_im_write(void)
 		T_EQ("response encodes",
 		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len), MATTER_OK);
 		T_OK("and has content", len > 0u);
-		T_EQ("the ACL reached the device", info.fabric_acls[0].len, wr.data_len);
+		T_EQ("the ACL reached the device", info.fabric_acls[0].len,
+		     wr.items[0].data_len);
 
 		/* Suppressed: nothing to send, but the write still ran. */
 		info.fabric_acls[0].len = 0u;
@@ -1696,7 +1738,8 @@ void test_matter_im_write(void)
 		T_EQ("suppressed response encodes",
 		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len), MATTER_OK);
 		T_EQ("nothing to send", (long)len, 0L);
-		T_EQ("but the write still ran", info.fabric_acls[0].len, wr.data_len);
+		T_EQ("but the write still ran", info.fabric_acls[0].len,
+		     wr.items[0].data_len);
 
 		/*
 		 * A batch gets an ANSWER, and nothing runs. The peer asked for
@@ -1714,6 +1757,21 @@ void test_matter_im_write(void)
 		T_EQ("and nothing was written", (long)info.fabric_acls[0].len, 0L);
 		T_OK("status is RESOURCE_EXHAUSTED",
 		     memchr(out, MATTER_IM_STATUS_RESOURCE_EXHAUSTED, len) != NULL);
+
+		/* A list transaction is not an arbitrary batch: both IBs name the
+		 * same attribute and the second explicitly carries AppendItem. */
+		memset(&info.binding, 0, sizeof(info.binding));
+		blen = build_binding_list_write(buf, sizeof(buf));
+		T_EQ("binding list transaction decodes",
+		     matter_im_write_request_decode(buf, blen, &wr), MATTER_OK);
+		T_OK("binding list transaction is accepted", !wr.truncated);
+		T_EQ("it has replace and append", (long)wr.n_items, 2L);
+		len = 0u;
+		T_EQ("binding list response encodes",
+		     matter_im_write_response_encode(&srv, &wr, out, sizeof(out), &len),
+		     MATTER_OK);
+		T_EQ("one binding lands", (long)info.binding.count, 1L);
+		T_EQ("and names the target", (long)info.binding.e[0].node_id, 43L);
 	}
 
 	t_group("SubscribeRequest");

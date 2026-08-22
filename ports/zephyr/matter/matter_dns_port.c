@@ -201,11 +201,14 @@ int matter_thread_resolve(const char *instance_name, matter_thread_resolve_fn cb
 
 	openthread_mutex_lock();
 	/* NULL config: use whatever server the network told OpenThread about,
-	 * which is the same one the SRP client registered this node with. The
-	 * context is the generation, so a late answer can be told apart from
-	 * the answer to the query now in the slot. */
-	err = otDnsClientResolveService(ot, instance_name, MATTER_SERVICE_NAME, resolve_cb,
-					(void *)(uintptr_t)s_query.generation, NULL);
+	 * which is the same one the SRP client registered this node with. Resolve
+	 * the host address too: an SRV response is not required to carry its AAAA
+	 * record in the Additional Data section. The context is the generation, so
+	 * a late answer can be told apart from the answer to the query now in the
+	 * slot. */
+	err = otDnsClientResolveServiceAndHostAddress(
+		ot, instance_name, MATTER_SERVICE_NAME, resolve_cb,
+		(void *)(uintptr_t)s_query.generation, NULL);
 	openthread_mutex_unlock();
 
 	if (err != OT_ERROR_NONE) {

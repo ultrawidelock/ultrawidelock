@@ -1571,9 +1571,11 @@ void test_matter_clusters(void)
 		info.committed_slots = MATTER_FABRIC_SLOT_BIT(0u) |
 				       MATTER_FABRIC_SLOT_BIT(1u) |
 				       MATTER_FABRIC_SLOT_BIT(2u);
-		info.fabrics[0].case_admin_subject = 0x1234u;
+		info.fabrics[0].case_admin_subject = UINT64_C(0xFFFFFFFD27730001);
 		info.accessing_fabric_index = 1u;
-		info.accessing_node_id = 0x1234u;
+		info.accessing_node_id = UINT64_C(0x804B5E16);
+		info.accessing_cats[0] = UINT32_C(0x27730002);
+		info.accessing_cat_count = 1u;
 		/* Slot 2 owns the shared intermediate-certificate area. */
 		info.icac.owner_index = 2u;
 		info.icac.len = 100u;
@@ -1588,6 +1590,20 @@ void test_matter_clusters(void)
 		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(0u), 2u);
 		(void)matter_tlv_end_container(&w);
 		(void)matter_tlv_writer_finish(&w, &flen);
+
+		info.accessing_cats[0] = UINT32_C(0x27720002);
+		T_EQ("a different CAT identifier is refused",
+		     run_root_command(&srv, MATTER_CLUSTER_OPERATIONAL_CREDENTIALS,
+				      MATTER_CMD_OC_REMOVE_FABRIC, fields, flen, &resp),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+		T_EQ("the target survives the wrong CAT", info.fabrics[1].index, 2u);
+		info.accessing_cats[0] = UINT32_C(0x27730000);
+		T_EQ("an older CAT version is refused",
+		     run_root_command(&srv, MATTER_CLUSTER_OPERATIONAL_CREDENTIALS,
+				      MATTER_CMD_OC_REMOVE_FABRIC, fields, flen, &resp),
+		     MATTER_IM_STATUS_UNSUPPORTED_ACCESS);
+		T_EQ("the target survives the old CAT", info.fabrics[1].index, 2u);
+		info.accessing_cats[0] = UINT32_C(0x27730002);
 
 		/* No fail-safe armed on purpose: removal is administration, not
 		 * commissioning, and chip-tool's remove-fabric arms none. */

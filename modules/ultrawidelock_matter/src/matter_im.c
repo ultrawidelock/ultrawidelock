@@ -149,6 +149,8 @@ void matter_im_read_pool_drop_session(struct matter_im_read_pool *pool, uint16_t
 #define TAG_PATH_ENDPOINT  2u
 #define TAG_PATH_CLUSTER   3u
 #define TAG_PATH_ATTRIBUTE 4u
+#define TAG_PATH_LIST_INDEX 5u
+#define MATTER_TLV_NULL_TYPE 0x14u
 
 /* ReportDataMessage.h:43-47 */
 #define TAG_REPORT_SUBSCRIPTION_ID   0u
@@ -264,6 +266,17 @@ static int decode_path(struct matter_tlv_reader *r, struct matter_im_path *p)
 			}
 			p->attribute = (uint32_t)v;
 			p->have_attribute = true;
+		} else if (matter_tlv_tag(r) == MATTER_TLV_CTX(TAG_PATH_LIST_INDEX)) {
+			p->have_list_index = true;
+			if (matter_tlv_element_type(r) == MATTER_TLV_NULL_TYPE) {
+				p->list_index_null = true;
+			} else {
+				rc = matter_tlv_get_u64(r, &v);
+				if (rc != MATTER_OK || v > UINT16_MAX) {
+					return MATTER_E_INVAL;
+				}
+				p->list_index = (uint16_t)v;
+			}
 		}
 	}
 
@@ -531,6 +544,14 @@ static void put_path(struct matter_tlv_writer *w, matter_tlv_tag_t tag,
 	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_PATH_ENDPOINT), p->endpoint);
 	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_PATH_CLUSTER), p->cluster);
 	(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_PATH_ATTRIBUTE), p->attribute);
+	if (p->have_list_index) {
+		if (p->list_index_null) {
+			(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_PATH_LIST_INDEX));
+		} else {
+			(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_PATH_LIST_INDEX),
+						 p->list_index);
+		}
+	}
 	(void)matter_tlv_end_container(w);
 }
 
@@ -1485,26 +1506,12 @@ int matter_im_write_request_decode(const uint8_t *tlv, size_t len, struct matter
 				return rc;
 			}
 			seen++;
-			if (seen > 1u) {
-				/*
-				 * One attribute per WriteRequest is this node's
-				 * cap. It used to be reported by returning an
-				 * error, which the caller could only answer with
-				 * SILENCE -- and a commissioner that gets no
-				 * WriteResponse waits out its timeout on "Adding
-				 * to home". Matter has no MaxAttributesPerWrite
-				 * to declare the cap with, so the only honest
-				 * way to say it is in the response.
-				 *
-				 * The first path is already parsed and stays
-				 * valid; @ref matter_im_write::truncated makes
-				 * the encoder refuse the whole request with
-				 * RESOURCE_EXHAUSTED rather than apply a write
-				 * the peer asked for as part of a set.
-				 */
+			if (seen > MATTER_IM_MAX_WRITES) {
 				out->truncated = true;
 				return MATTER_OK;
 			}
+			out->n_items = (uint8_t)seen;
+			struct matter_im_write_item *item = &out->items[seen - 1u];
 
 			rc = matter_tlv_enter(&r); /* into the AttributeDataIB */
 			if (rc != MATTER_OK) {
@@ -1528,7 +1535,7 @@ int matter_im_write_request_decode(const uint8_t *tlv, size_t len, struct matter
 				}
 
 				if (matter_tlv_tag(&r) == MATTER_TLV_CTX(TAG_ADATA_PATH)) {
-					rc = decode_path(&r, &out->path);
+					rc = decode_path(&r, &item->path);
 					if (rc != MATTER_OK) {
 						return rc;
 					}
@@ -1546,8 +1553,8 @@ int matter_im_write_request_decode(const uint8_t *tlv, size_t len, struct matter
 							return rc;
 						}
 					}
-					out->data = tlv + start;
-					out->data_len = r.next_off - start;
+					item->data = tlv + start;
+					item->data_len = r.next_off - start;
 				}
 			}
 			rc = matter_tlv_exit(&r);
@@ -1570,8 +1577,23 @@ int matter_im_write_request_decode(const uint8_t *tlv, size_t len, struct matter
 	 * asked for, but a write that guesses wrongly overwrites something the
 	 * commissioner never named.
 	 */
-	if (!out->path.have_endpoint || !out->path.have_cluster || !out->path.have_attribute) {
-		return MATTER_E_INVAL;
+	for (uint8_t i = 0u; i < out->n_items; i++) {
+		const struct matter_im_path *p = &out->items[i].path;
+
+		if (!p->have_endpoint || !p->have_cluster || !p->have_attribute) {
+			return MATTER_E_INVAL;
+		}
+		if (i > 0u) {
+			const struct matter_im_path *first = &out->items[0].path;
+
+			/* The only supported batch is one list transaction: ReplaceAll,
+			 * followed by AppendItem operations on that same attribute. */
+			if (first->have_list_index || !p->have_list_index || !p->list_index_null ||
+			    p->endpoint != first->endpoint || p->cluster != first->cluster ||
+			    p->attribute != first->attribute) {
+				out->truncated = true;
+			}
+		}
 	}
 	return MATTER_OK;
 }
@@ -1589,7 +1611,7 @@ int matter_im_write_response_encode(const struct matter_im_server *srv,
 				    size_t *out_len)
 {
 	struct matter_tlv_writer w;
-	uint8_t status;
+	uint8_t status[MATTER_IM_MAX_WRITES];
 
 	if (srv == NULL || wr == NULL || out == NULL || out_len == NULL) {
 		return MATTER_E_INVAL;
@@ -1600,11 +1622,17 @@ int matter_im_write_response_encode(const struct matter_im_server *srv,
 	 * write -- returning early here would silently drop it. */
 	if (wr->truncated) {
 		/* Nothing runs; see matter_im_write::truncated. */
-		status = MATTER_IM_STATUS_RESOURCE_EXHAUSTED;
+		status[0] = MATTER_IM_STATUS_RESOURCE_EXHAUSTED;
 	} else if (srv->write == NULL) {
-		status = MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
+		status[0] = MATTER_IM_STATUS_UNSUPPORTED_ATTRIBUTE;
 	} else {
-		status = srv->write(srv->ctx, &wr->path, wr->data, wr->data_len);
+		for (uint8_t i = 0u; i < wr->n_items; i++) {
+			status[i] = srv->write(srv->ctx, &wr->items[i].path, wr->items[i].data,
+					       wr->items[i].data_len);
+			if (status[i] != MATTER_IM_STATUS_SUCCESS) {
+				break;
+			}
+		}
 	}
 
 	if (wr->suppress_response) {
@@ -1614,13 +1642,15 @@ int matter_im_write_response_encode(const struct matter_im_server *srv,
 	matter_tlv_writer_init(&w, out, cap);
 	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
 	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(TAG_WRESP_RESPONSES), MATTER_TLV_ARRAY);
-	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
-	put_path(&w, MATTER_TLV_CTX(TAG_ASTATUS_PATH), &wr->path);
-	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(TAG_ASTATUS_STATUS),
-					 MATTER_TLV_STRUCTURE);
-	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_STATUS_STATUS), status);
-	(void)matter_tlv_end_container(&w);
-	(void)matter_tlv_end_container(&w);
+	for (uint8_t i = 0u; i < (wr->truncated ? 1u : wr->n_items); i++) {
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		put_path(&w, MATTER_TLV_CTX(TAG_ASTATUS_PATH), &wr->items[i].path);
+		(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(TAG_ASTATUS_STATUS),
+						 MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_STATUS_STATUS), status[i]);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_end_container(&w);
+	}
 	(void)matter_tlv_end_container(&w);
 	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_IM_REVISION), MATTER_IM_REVISION);
 	(void)matter_tlv_end_container(&w);
