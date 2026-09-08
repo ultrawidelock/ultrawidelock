@@ -271,25 +271,45 @@ void dw3000_hw_wakeup(void)
 		return;
 	}
 	LOG_INF("WAKEUP CS");
-	dw3000_spi_wakeup();   /* drive CS low ~500us, then release (Qorvo CS-toggle) */
-	k_busy_wait(2000);     /* INIT_RC -> IDLE_RC startup time (SDK reference: Sleep(2)) */
-	dw3000_asleep = false; /* toggle done — allow the SPI reads dwt_checkidlerc does */
+	dw3000_asleep = false; /* allow the SPI reads below; a toggle at an awake part is harmless */
 
-	/* Spin until the chip CONFIRMS IDLE_RC, exactly as the SDK deep-sleep examples
-	 * (ex_01b_tx_sleep, ex_05a_ds_twr_init).  dwt_checkidlerc() READS the RCINIT/
-	 * SPIRDY status bits — safe, unlike a setdwstate WRITE.  Bounded (~5 ms) so a
-	 * chip that never wakes fails loud instead of hanging the llhw worker. */
-	{
+	for (int attempt = 1; attempt <= 3; attempt++) {
+		dw3000_spi_wakeup(); /* drive CS low ~500us, then release (Qorvo CS-toggle) */
+		k_busy_wait(2000);   /* INIT_RC -> IDLE_RC startup time (SDK reference: Sleep(2)) */
+
+		/* Spin until the chip CONFIRMS IDLE_RC, exactly as the SDK deep-sleep examples
+		 * (ex_01b_tx_sleep, ex_05a_ds_twr_init).  dwt_checkidlerc() READS the RCINIT/
+		 * SPIRDY status bits — safe, unlike a setdwstate WRITE.  Bounded (~5 ms) so a
+		 * chip that never wakes fails loud instead of hanging the llhw worker. */
 		int spins = 0;
 
 		while (!dwt_checkidlerc() && spins < 500) {
 			k_busy_wait(10);
 			spins++;
 		}
-		if (spins >= 500) {
-			LOG_ERR("WAKEUP: chip never reached IDLE_RC (checkidlerc timeout)");
+		if (spins < 500) {
+			return;
 		}
+
+		/* RCINIT is a sticky status bit, and the SDK ISR clears every status
+		 * bit it reads. After a session the interrupt mask is live and comes
+		 * back from the AON array on wake, so a wake-time IRQ can consume the
+		 * flag before this spin sees it. A part that answers with its DEV_ID
+		 * is awake regardless of who read the flag first; one that answers
+		 * with nothing is still down, and gets another toggle. */
+		uint32_t id = dwt_readdevid();
+
+		if ((id & 0xFFFFFF00u) == 0xDECA0300u) {
+			LOG_WRN("WAKEUP: IDLE_RC flag not seen, DEV_ID 0x%08x answers; awake",
+				(unsigned)id);
+			return;
+		}
+		LOG_WRN("WAKEUP: attempt %d, no IDLE_RC, DEV_ID 0x%08x; toggling CS again",
+			attempt, (unsigned)id);
 	}
+	/* Left marked awake: the caller's DEV_ID check now fails and it rebuilds
+	 * the radio from a hard reset, which is the only wake that cannot miss. */
+	LOG_ERR("WAKEUP: chip never reached IDLE_RC (3 CS toggles)");
 }
 
 /** set WAKEUP pin low if available */

@@ -127,6 +127,21 @@ config ULTRAWIDELOCK_RSSI_GATE_POLL_MS
 	  L2CAP channel is up (one HCI Read RSSI per period; negligible next
 	  to the UWB RX it replaces). The first read fires at channel-open so
 	  a connect-at-the-door walk-up is never delayed by the poll interval.
+
+config ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE
+	int "Credential housekeeping thread stack size"
+	range 2048 8192
+	default 3072
+	help
+	  Static stack, in bytes, for the deferred P-256 spare generation and
+	  provisioning persistence (cred_housekeeping). Mirrors the symbol in
+	  modules/ultrawidelock_cred/Kconfig, same default, so the constants gate
+	  sees one number; without the symbol this port had no way to move off the
+	  source fallback of 3072, which mbedTLS's software P-256 keygen overran
+	  (stack canary in cred_housekeeping on an ESP32-S3). The Matter lock pins
+	  6144 in its sdkconfig.defaults, matching the step-up worker that runs the
+	  same curve on this port.
+
 config ULTRAWIDELOCK_APPROACH_PREDICT
 	bool "Predictive (ETA) unlock — negative latency"
 	depends on !ULTRAWIDELOCK_RSSI_GATE

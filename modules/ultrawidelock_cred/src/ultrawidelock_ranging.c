@@ -278,10 +278,19 @@ int ultrawidelock_ranging_start(uint16_t conn_handle, uint32_t session_id, const
 		return -1;
 	}
 	if (s_sess_active) {
-		LOG_WRN("[conn %u] ranging busy (active on conn %u); DW3000 is "
-			"single-session",
+		/* The DW3000 is single-session and the peer that just finished
+		 * authenticating is the one at the door. Refusing here used to
+		 * terminate ITS session ("ranging setup unavailable", a GeneralError
+		 * on the phone) in favour of whichever link got the radio first; with
+		 * more than one BLE connection slot that link is often a ghost of the
+		 * same Watch whose supervision timeout has not yet fired, so the fresh
+		 * reconnect lost to its own corpse every 3-4 s. Newest wins: the
+		 * holder's ranging is torn down and its BLE session is left to close
+		 * on its own (disconnect or RSSI fade), exactly as a stale link would. */
+		LOG_WRN("[conn %u] ranging active on conn %u; preempting it (DW3000 is "
+			"single-session)",
 			conn_handle, s_sess_conn);
-		return -1;
+		ultrawidelock_ranging_stop(s_sess_conn);
 	}
 
 	/* Release the demo responder so the radio is free for the negotiated

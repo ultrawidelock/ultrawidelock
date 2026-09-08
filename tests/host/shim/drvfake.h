@@ -33,6 +33,12 @@ struct drvfake_state {
 	unsigned configuresleep_calls;
 	uint16_t sleep_mode;
 	uint8_t sleep_wake;
+	/* DEEPSLEEP entry/exit (uwb_min_sleep + the wake-restore in ensure_init) */
+	unsigned entersleep_calls;
+	int32_t last_entersleep; /* idle_rc argument of the last dwt_entersleep */
+	unsigned restoreconfig_calls;
+	int32_t restoreconfig_ret;
+	bool asleep; /* dw3000_hw_mark_asleep sets, dw3000_hw_wakeup clears */
 	unsigned setleds_calls;
 	uint8_t leds_mode;
 	uint32_t devid; /* dwt_readdevid */

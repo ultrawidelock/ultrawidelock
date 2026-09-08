@@ -101,6 +101,11 @@ struct ble_gap_event {
 		} connect;
 		struct {
 			int reason;
+			/* NimBLE carries the full ble_gap_conn_desc here; the transport
+			 * reads only the handle. */
+			struct {
+				uint16_t conn_handle;
+			} conn;
 		} disconnect;
 		struct {
 			int status;
@@ -176,6 +181,7 @@ struct ble_npl_callout {
 };
 
 void ble_npl_event_init(struct ble_npl_event *ev, void (*fn)(struct ble_npl_event *), void *arg);
+void *ble_npl_event_get_arg(struct ble_npl_event *ev);
 void ble_npl_eventq_put(struct ble_npl_eventq *q, struct ble_npl_event *ev);
 void ble_npl_callout_init(struct ble_npl_callout *co, struct ble_npl_eventq *q,
 			  void (*fn)(struct ble_npl_event *), void *arg);

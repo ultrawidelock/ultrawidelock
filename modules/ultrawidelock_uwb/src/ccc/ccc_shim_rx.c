@@ -334,10 +334,22 @@ static bool mhr_context_ok(const struct ccc_mhr_fields *mhr)
  * from an initiator declining to send Final_Data once Response_1 goes out,
  * which is exactly the observation stage B was built on. Sizing it from the
  * constants stops the buffer falling behind CCC_MAX_RESPONDERS again.
+ *
+ * Then it happened once more, one layer up: that derivation covers Final_Data
+ * only, but ccc_shim_rx_try_prepoll stashes EVERY SP0 frame through this
+ * buffer, and a full-size 802.15.4 frame (aMaxPHYPacketSize, 127 with FCS)
+ * reads 127 > 121. Seen on an ESP32-S3 walk-up as "SP0 oversize len=127
+ * cap=121 DROPPED", the listener sitting in green RX and no Pre-POLL ever
+ * accepted. So the floor is the PHY maximum, and the Final_Data derivation
+ * only grows it past that if the responder count ever makes it larger.
  */
-#define CCC_SP0_STASH_LEN                                                                          \
+#define CCC_SP0_FINAL_DATA_MAX_LEN                                                                 \
 	(CCC_MHR_LEN + CCC_FINAL_DATA_HDR_LEN + (CCC_MAX_RESPONDERS * CCC_RESPONDER_LEN) +          \
 	 CCC_SP0_MIC_LEN + 2u)
+#define CCC_SP0_PHY_MAX_LEN 127u
+#define CCC_SP0_STASH_LEN                                                                          \
+	((CCC_SP0_FINAL_DATA_MAX_LEN) > (CCC_SP0_PHY_MAX_LEN) ? (CCC_SP0_FINAL_DATA_MAX_LEN)        \
+							      : (CCC_SP0_PHY_MAX_LEN))
 
 /** @brief Pre-POLL frame stashed at RX for a DEFERRED decode: the ~2 ms decrypt+derive must not run
  * between the Pre-POLL and the POLL. */

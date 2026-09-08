@@ -332,6 +332,11 @@ void ble_npl_callout_init(struct ble_npl_callout *co, struct ble_npl_eventq *q,
 	fake_last_callout = co;
 }
 
+void *ble_npl_event_get_arg(struct ble_npl_event *ev)
+{
+	return ev->arg;
+}
+
 void ble_npl_callout_reset(struct ble_npl_callout *co, uint32_t ticks)
 {
 	co->armed = 1;

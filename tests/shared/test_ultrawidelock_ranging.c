@@ -461,7 +461,17 @@ int main(void)
 		    s_sess_user == (void *)(uintptr_t)7);
 	okc("s.ok.ursk", memcmp(s_sess_ursk, ursk, sizeof(ursk)) == 0);
 	okc("s.ok.version", s_sess_ver == 0x0100u);
-	okc("s.busy", ultrawidelock_ranging_start(8, 2, ursk, &sc) == -1);
+	/* A second peer finishing auth takes the radio: the holder's session is
+	 * torn down, the newcomer's is armed. Refusing the newcomer used to turn
+	 * a stale link (a Watch whose supervision timeout had not fired yet) into
+	 * a GeneralError on its own reconnect. */
+	before = s_sess_destroys;
+	okc("s.preempt", ultrawidelock_ranging_start(8, 2, ursk, &sc) == 0);
+	okc("s.preempt.holder_released", s_sess_destroys == before + 1);
+	okc("s.preempt.owner", s_sess_user == (void *)(uintptr_t)8);
+	okc("s.preempt.old_conn_dead", ultrawidelock_ranging_feed(7, irs, sizeof(irs)) == -1);
+	/* Hand the radio back to conn 7; every feed scenario below is written to it. */
+	okc("s.preempt.back", ultrawidelock_ranging_start(7, 0x11223344u, ursk, &sc) == 0);
 
 	printf("F: feed\n");
 	okc("f.wrong_conn", ultrawidelock_ranging_feed(8, irs, sizeof(irs)) == -1);

@@ -132,6 +132,22 @@ CONFIG_MBEDTLS_ECP_FIXED_POINT_OPTIM=y
 CONFIG_ULTRAWIDELOCK_RSSI_GATE_OPEN_DBM=-55
 CONFIG_ULTRAWIDELOCK_RSSI_GATE_CLOSE_DBM=-65
 
+# The hold cap takes the trade the Kconfig help describes, and it does so for
+# the Apple Watch. The thresholds above were calibrated against an iPhone; a
+# Watch transmits well below it and can sit between -55 and -65 dBm at the
+# door, where an unbounded hold (the Kconfig default, 0) never releases
+# AP-Completed. The phone's patience is ~1.9 s and its retry then repeats the
+# same hold, so "let it come back closer" never converges for that handset:
+# the observed result was a reconnect every 3-4 s and no UWB. 1500 ms plus the
+# 250 ms poll releases at ~1.7 s, inside the 1873 ms measured on the bench.
+CONFIG_ULTRAWIDELOCK_RSSI_GATE_MAX_HOLD_MS=1500
+
+# cred_housekeeping runs mbedTLS's software P-256 keygen (the spare ephemeral
+# refill) and the NVS store. The 3072-byte source default is a Zephyr/PSA
+# figure; on this port it overran (stack canary in cred_housekeeping on an
+# ESP32-S3). 6144 is what the step-up worker already uses for the same curve.
+CONFIG_ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE=6144
+
 # Two-anchor round: the lock advertises Number_Responder_Nodes=2, reserving
 # slot 3 for the satellite's Response_1 and moving the phone's Final out one
 # slot. The phone honours the layout but only ever reports responder 0 (proven
