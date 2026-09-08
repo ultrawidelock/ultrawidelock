@@ -12,6 +12,100 @@ tag was cut.
 
 Nothing yet.
 
+## [0.5.0] - 2026-09-09
+
+The lock stops drawing current when nobody is at the door. The DW3110 never
+slept in any earlier release; now it sleeps between sessions, and a battery
+build puts the rest of the board down with it. This release also fixes six ways
+the ESP32-S3 build failed to get a phone or a watch through authentication, all
+of them present in v0.4.1.
+
+### The DW3110 sleeps between sessions
+
+`dwt_entersleep()` had zero call sites through v0.4.1, so the radio idled at
+`IDLE_PLL` forever. It now goes down when the Pre-POLL listen stops and comes
+back on the next approach. The datasheet's two states are **18 mA** idling
+against **260 nA** asleep.
+
+The wake is not inferred. It is a chip-select toggle, a confirmed `IDLE_RC`, and
+a full config restore, and if the part does not answer its device id the radio is
+rebuilt from reset rather than left half-awake. Walk-up unlock and the Home app
+tile were both re-tested on hardware after every lever in this section.
+
+### A battery build
+
+`make build BATTERY=1` on the DWM3001CDK adds sleepy Thread, two-rate
+advertising, and darkness. Register reads over SWD, before and after, no
+estimates:
+
+| | Before | After |
+| --- | --- | --- |
+| DW3110 | never slept | asleep between sessions |
+| 802.15.4 receive duty | on in **20 of 20** samples | **0 of 20** |
+| High-frequency crystal | up, always | down, 0 to 5% |
+| BLE advertising | 30 to 60 ms, forever | 30 to 60 ms for 30 s, then 1.0 to 1.2 s |
+| Board LEDs | heartbeat every 2 s while locked | dark while locked |
+
+The default build keeps its lamps and its fast Thread. Nothing here is on unless
+you ask for it.
+
+### What that buys, and the one number that decides it
+
+Adding up the terms this firmware controls: about **24.1 mA before, 0.060 mA
+after**, roughly 400x. That total is PREDICTED from the two datasheets, not
+measured with a meter, and the advertising and polling rows are the softest
+figures in it.
+
+The pivot is not firmware. A stock DWM3001CDK has a J-Link debugger and a power
+LED on the same rail drawing something like 15 mA, and no Kconfig reaches them:
+
+| Board | Before | After |
+| --- | --- | --- |
+| Stock CDK, debugger live | 3.7 days | 9.7 days |
+| Custom board, or the debugger rail cut | 6.1 days | past six months |
+
+Both rows assume a 5,000 mAh pack derated to 3,500 mAh usable. Treat them as two
+hypotheses until a meter sits in series at the board's measurement header.
+`docs/power-baseline.md` is the whole workbook, including what it still cannot
+say.
+
+### Fixes for anyone running v0.4.1 on ESP32-S3
+
+Reported against a two-anchor ESP32-S3 build: an iPhone that froze after
+Pre-POLL, and an Apple Watch that reconnected every 3 to 4 seconds and failed
+authentication outright. Six defects, all shipped in v0.4.1:
+
+- A single global connection-parameter retry, shared across connections, fired
+  conflicting updates whenever a reconnect raced a stale link.
+- A second phone finishing authentication was refused ranging instead of taking
+  it over, which surfaced on the phone as a general error.
+- The Pre-POLL stash was sized to the frame the lock expected rather than the
+  127-byte maximum the radio can hand it, so a full-length frame was dropped.
+- The signal-strength gate could hold the completion message past the phone's
+  patience, which is about 1.9 seconds.
+- Spare key generation overran its 3 KB stack and tripped the stack canary. The
+  ESP32 build also never declared the option that sizes it, so setting it did
+  nothing.
+- The DW3110 woke for the first session after boot and no later one, which is
+  the deep sleep above failing on its second use. It never shipped.
+
+### Also in this release
+
+- BLE advertising parameters were returned as a compound literal that went out of
+  scope, so both parameter sets are now named and outlive the call.
+- Documentation rewritten around what each feature does, with the walk-up
+  recording moved under the layout.
+- Host suites run **9,681 checks** across 18 suites, up from 9,608 at v0.4.0.
+
+### Note for anyone building against the SDK
+
+`VERSION` moves to the 0.5 series. While the SDK is pre-1.0 its generated CMake
+package accepts only a matching minor series, so a consumer pinned to 0.4 has to
+move with it. v0.4.1 shipped without bumping this file, so images from that tag
+carry a 0.4.0 version in their MCUboot header.
+
+Full diff: <https://github.com/ultrawidelock/ultrawidelock/compare/v0.4.1...v0.5.0>
+
 ## [0.4.0] - 2026-08-28
 
 The lock stopped needing Zephyr, grew a second anchor so it can tell inside from
