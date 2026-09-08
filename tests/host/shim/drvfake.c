@@ -81,6 +81,29 @@ void dwt_configuresleep(uint16_t mode, uint8_t wake)
 	drvfake.sleep_wake = wake;
 }
 
+void dwt_entersleep(int32_t idle_rc)
+{
+	drvfake.entersleep_calls++;
+	drvfake.last_entersleep = idle_rc;
+}
+
+int32_t dwt_restoreconfig(int restore_mask)
+{
+	(void)restore_mask;
+	drvfake.restoreconfig_calls++;
+	return drvfake.restoreconfig_ret;
+}
+
+void dw3000_hw_mark_asleep(void)
+{
+	drvfake.asleep = true;
+}
+
+bool dw3000_hw_is_asleep(void)
+{
+	return drvfake.asleep;
+}
+
 void dwt_setleds(uint8_t mode)
 {
 	drvfake.setleds_calls++;
@@ -295,6 +318,7 @@ int dw3000_hw_init_interrupt(void)
 void dw3000_hw_wakeup(void)
 {
 	drvfake.hw_wakeup_calls++;
+	drvfake.asleep = false; /* the target clears its own flag the same way */
 }
 
 void dw3000_spi_wakeup(void)

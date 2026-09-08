@@ -66,6 +66,9 @@ enum { DWT_SUCCESS = 0, DWT_ERROR = -1 };
 #define DWT_GOTOIDLE        0x0100
 #define DWT_WAKE_CSN        0x8
 #define DWT_SLP_EN          0x1
+#define DWT_PRES_SLEEP      0x20
+#define DWT_DW_IDLE_RC      0x2
+#define DWT_RESTORE_TXRX_MODE 0x0C
 /* Values from the vendor header (deca_device_api.h). DISABLE is 0 and is the
  * one CONFIG_ULTRAWIDELOCK_UWB_LEDS=n passes; it was missing here, so a battery
  * build compiled for the target and failed only in the host suite. */
@@ -147,6 +150,8 @@ int32_t dwt_initialise(int32_t mode);
 uint32_t dwt_readdevid(void);
 void dwt_configuretxrf(dwt_txconfig_t *config);
 void dwt_configuresleep(uint16_t mode, uint8_t wake);
+void dwt_entersleep(int32_t idle_rc);
+int32_t dwt_restoreconfig(int restore_mask);
 void dwt_setleds(uint8_t mode);
 void dwt_writesysstatuslo(uint32_t mask);
 

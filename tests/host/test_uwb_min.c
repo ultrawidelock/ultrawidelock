@@ -81,12 +81,70 @@ void test_uwb_min(void)
 	T_EQ("txrf PGdly", (long)drvfake.last_txcfg.PGdly, 0x34L);
 	T_EQ("sleep mode", (long)drvfake.sleep_mode,
 	     (long)(DWT_CONFIG | DWT_GOTOIDLE | DWT_RUNSAR));
-	T_EQ("sleep wake", (long)drvfake.sleep_wake, (long)(DWT_WAKE_CSN | DWT_SLP_EN));
+	T_EQ("sleep wake", (long)drvfake.sleep_wake,
+	     (long)(DWT_PRES_SLEEP | DWT_WAKE_CSN | DWT_SLP_EN));
 	T_EQ("leds blink+enable", (long)drvfake.leds_mode,
 	     (long)(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK));
 	T_EQ("irq wired", (long)drvfake.hw_irq_calls, 1L);
 	T_EQ("init again is a no-op", uwb_min_radio_init(), 0);
 	T_EQ("configure not repeated", (long)drvfake.configure_calls, 1L);
+
+	/* SLEEP_EN self-clears on wake (SDK, DWT_PRES_SLEEP), so a sleep armed once
+	 * at boot covers one sleep. The bench symptom of arming it once: the first
+	 * walk-up ranges, every later one logs "chip never reached IDLE_RC" and
+	 * never receives a Pre-POLL. Continues from the radio-ready state above. */
+	t_group("deep sleep: re-armed every entry, restored every wake");
+	unsigned arm0 = drvfake.configuresleep_calls;
+	unsigned trx0 = drvfake.trxoff_calls;
+
+	uwb_min_sleep();
+	T_EQ("sleep.trxoff first", (long)drvfake.trxoff_calls, (long)(trx0 + 1u));
+	T_EQ("sleep.rearmed", (long)drvfake.configuresleep_calls, (long)(arm0 + 1u));
+	T_EQ("sleep.rearm keeps SLEEP_EN", (long)drvfake.sleep_wake,
+	     (long)(DWT_PRES_SLEEP | DWT_WAKE_CSN | DWT_SLP_EN));
+	T_EQ("sleep.entered", (long)drvfake.entersleep_calls, 1L);
+	T_EQ("sleep.idle_rc", (long)drvfake.last_entersleep, (long)DWT_DW_IDLE_RC);
+	T_OK("sleep.marked", drvfake.asleep);
+	uwb_min_sleep();
+	T_EQ("sleep.twice is once", (long)drvfake.entersleep_calls, 1L);
+
+	unsigned wake0 = drvfake.hw_wakeup_calls;
+	unsigned init0 = drvfake.initialise_calls;
+
+	T_EQ("wake.rc", uwb_min_radio_init(), 0);
+	T_EQ("wake.toggled", (long)drvfake.hw_wakeup_calls, (long)(wake0 + 1u));
+	T_EQ("wake.restored", (long)drvfake.restoreconfig_calls, 1L);
+	T_EQ("wake.no reinit", (long)drvfake.initialise_calls, (long)init0);
+	T_OK("wake.cleared", !drvfake.asleep);
+	T_EQ("wake.awake init is free", uwb_min_radio_init(), 0);
+	T_EQ("wake.restore once per wake", (long)drvfake.restoreconfig_calls, 1L);
+	uwb_min_sleep();
+	T_EQ("sleep.second entry", (long)drvfake.entersleep_calls, 2L);
+	T_EQ("sleep.second rearm", (long)drvfake.configuresleep_calls, (long)(arm0 + 2u));
+
+	t_group("deep sleep: a part that does not answer is rebuilt from reset");
+	drvfake.devid = 0u; /* still marked asleep; DEV_ID now reads as unpowered */
+	unsigned reset0 = drvfake.hw_reset_calls;
+	uint32_t gen1 = uwb_min_radio_generation();
+
+	init0 = drvfake.initialise_calls;
+	T_EQ("dead.rc", uwb_min_radio_init(), 0);
+	T_EQ("dead.no restore attempted", (long)drvfake.restoreconfig_calls, 1L);
+	/* uwb_min_hw_reset's own reset, then the probe loop's per-attempt reset */
+	T_EQ("dead.reset+reprobe", (long)drvfake.hw_reset_calls, (long)(reset0 + 2u));
+	T_EQ("dead.reinit", (long)drvfake.initialise_calls, (long)(init0 + 1u));
+	T_EQ("dead.generation bumped", (long)uwb_min_radio_generation(), (long)(gen1 + 1u));
+	T_OK("dead.awake after", !drvfake.asleep);
+
+	t_group("deep sleep: a failed restore is rebuilt from reset too");
+	devid_ok();
+	uwb_min_sleep();
+	drvfake.restoreconfig_ret = DWT_ERROR;
+	init0 = drvfake.initialise_calls;
+	T_EQ("badrestore.rc", uwb_min_radio_init(), 0);
+	T_EQ("badrestore.tried", (long)drvfake.restoreconfig_calls, 2L);
+	T_EQ("badrestore.reinit", (long)drvfake.initialise_calls, (long)(init0 + 1u));
+	drvfake.restoreconfig_ret = DWT_SUCCESS;
 
 	t_group("radio init failures");
 	(void)uwb_min_hw_reset();

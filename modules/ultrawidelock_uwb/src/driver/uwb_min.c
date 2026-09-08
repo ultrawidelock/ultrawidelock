@@ -27,6 +27,19 @@ static uint32_t g_radio_generation;
 static bool g_probed;
 static bool g_radio_ready;
 
+/* DEEPSLEEP parameters: armed at init and re-armed before EVERY entry.
+ *
+ * The SDK is explicit that SLEEP_EN self-clears on wake (deca_device_api.h,
+ * DWT_PRES_SLEEP), so one boot-time dwt_configuresleep() covers exactly one
+ * sleep. The second dwt_entersleep() then saved the AON array with SLEEP_EN
+ * clear, the part stayed in IDLE_PLL with its OTP left in low-power mode, and
+ * the next "wake" toggled CS at an awake chip and spun for an IDLE_RC flag
+ * that never came: "WAKEUP: chip never reached IDLE_RC" on every session after
+ * the first, and no Pre-POLL ever received. DWT_PRES_SLEEP is what the SDK's
+ * own sleep examples pass; re-arming is the belt to its braces. */
+#define UWB_SLEEP_MODE (DWT_CONFIG | DWT_GOTOIDLE | DWT_RUNSAR)
+#define UWB_SLEEP_WAKE (DWT_PRES_SLEEP | DWT_WAKE_CSN | DWT_SLP_EN)
+
 /** @brief Bring the SDK up to "probed" state on first call; no-op afterwards.
  *
  * The whole reset -> wake -> probe sequence is retried: transient SPI/power
@@ -126,6 +139,32 @@ static const dwt_txconfig_t g_uwb_txcfg = {
 	.PGcount = 0,
 };
 
+#if defined(CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP)
+/** @brief After a wake: prove the part answers, then restore what the AON block
+ * does not. Returns 0 when the radio is usable again.
+ *
+ * The SDK's contract (ull_restore_common / ull_restore_txrx) is that every
+ * DEEPSLEEP wake is followed by dwt_restoreconfig(): it puts the OTP back into
+ * normal mode after dwt_entersleep() parked it in low-power mode, reprograms
+ * the LDO and bias tune from OTP, and re-locks the PLL. None of that survives
+ * in the AON array. The first wake after boot got away without it; the
+ * second did not. */
+static int uwb_wake_restore(void)
+{
+	uint32_t id = dwt_readdevid();
+
+	if ((id & 0xFFFFFF00u) != 0xDECA0300u) {
+		LOG_ERR("wake: DEV_ID 0x%08x, the part did not come back", (unsigned)id);
+		return -EIO;
+	}
+	if (dwt_restoreconfig(DWT_RESTORE_TXRX_MODE) != DWT_SUCCESS) {
+		LOG_ERR("wake: dwt_restoreconfig failed");
+		return -EIO;
+	}
+	return 0;
+}
+#endif
+
 /** @brief Bring the SDK up to "radio configured + LEDs on" state. */
 static int uwb_radio_ensure_init(void)
 {
@@ -140,7 +179,22 @@ static int uwb_radio_ensure_init(void)
 	 * unless dw3000_hw_mark_asleep() said otherwise, and toggling CS at an
 	 * awake chip would corrupt the next transfer, which is why that guard is
 	 * in the port rather than here. */
+#if defined(CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP)
+	const bool was_asleep = dw3000_hw_is_asleep();
+#endif
 	dw3000_hw_wakeup();
+
+#if defined(CONFIG_ULTRAWIDELOCK_UWB_DEEPSLEEP)
+	if (was_asleep && g_radio_ready && uwb_wake_restore() != 0) {
+		/* The part is not a configured radio any more. Rather than hand a
+		 * dead receiver to the session (the phone gives up after its
+		 * 30 s deadline), rebuild it from a hard reset: the same path a
+		 * cold boot takes, and the one dwt_probe's own retry loop is built
+		 * around. Costs a few ms, saves the walk-up. */
+		LOG_WRN("wake: rebuilding the radio from reset");
+		(void)uwb_min_hw_reset();
+	}
+#endif
 
 	if (g_radio_ready) {
 		return 0;
@@ -164,8 +218,8 @@ static int uwb_radio_ensure_init(void)
 	dwt_configuretxrf((dwt_txconfig_t *)&g_uwb_txcfg);
 
 	/* Configure sleep/wake: restore config + go to IDLE_PLL on wake, wake on chip-select,
-	 * re-run SAR. */
-	dwt_configuresleep(DWT_CONFIG | DWT_GOTOIDLE | DWT_RUNSAR, DWT_WAKE_CSN | DWT_SLP_EN);
+	 * re-run SAR. uwb_min_sleep() re-arms the same pair before every entry. */
+	dwt_configuresleep(UWB_SLEEP_MODE, UWB_SLEEP_WAKE);
 
 	/* INIT_BLINK | ENABLE: flash both LEDs once at setup to verify the LED lines.
 	 *
@@ -233,6 +287,12 @@ void uwb_min_sleep(void)
 	if (!g_radio_ready || dw3000_hw_is_asleep()) {
 		return;
 	}
+	/* IDLE first. Sleep entry from RX or TX is undefined, and the caller
+	 * only forces TRX off when a listener was up. Idempotent on an idle part. */
+	dwt_forcetrxoff();
+	/* Re-arm: SLEEP_EN self-cleared on the previous wake (see UWB_SLEEP_WAKE),
+	 * so without this the AON save below would not put the part down at all. */
+	dwt_configuresleep(UWB_SLEEP_MODE, UWB_SLEEP_WAKE);
 	dwt_entersleep(DWT_DW_IDLE_RC);
 	dw3000_hw_mark_asleep();
 #endif
