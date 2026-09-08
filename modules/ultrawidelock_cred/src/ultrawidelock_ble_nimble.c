@@ -488,12 +488,56 @@ static const struct ble_gatt_svc_def k_gatt_svcs[] = {
  * procedure has had time to finish; give up after a few tries so we never
  * fight a peer that insists on its own params. */
 #define CONN_UPD_ITVL_MAX   12u /* accept only 15 ms (1.25 ms units); iOS idles at ~30 */
-#define CONN_UPD_RETRY_MS   120u
+#define CONN_UPD_RETRY_MS   500u
 #define CONN_UPD_MAX_TRIES  3u
-static struct ble_npl_callout s_conn_upd_retry;
-static bool s_conn_upd_retry_init;
-static uint16_t s_conn_upd_conn;
-static uint8_t s_conn_upd_tries;
+
+/* One retry context PER CONNECTION. This was a single callout, handle and
+ * try-counter shared by every link, and BLE_GAP_EVENT_CONNECT reset the counter
+ * to zero. With two peers up (or one Watch reconnecting every 3-4 s beside a
+ * phone) each connect re-armed the other link's budget, so the "give up after
+ * three" never held and the request kept colliding (status 554 = HCI 0x2A,
+ * different transaction collision) until the controller asserted. The retry
+ * delay also moves out from 120 ms to 500 ms: 120 ms sat inside the peer's own
+ * connect-time parameter update, which is the transaction it collided with. */
+struct conn_upd_ctx {
+	struct ble_npl_callout retry;
+	uint16_t conn_handle;
+	uint8_t tries;
+	bool in_use;
+	bool init;
+};
+/* Sized from the IDF symbol where sdkconfig.h supplies it; the host fakes and
+ * the standalone FreeRTOS port build without one and get the IDF default. */
+#if defined(CONFIG_BT_NIMBLE_MAX_CONNECTIONS)
+#define CONN_UPD_CTX_MAX CONFIG_BT_NIMBLE_MAX_CONNECTIONS
+#else
+#define CONN_UPD_CTX_MAX 4
+#endif
+static struct conn_upd_ctx s_conn_upd[CONN_UPD_CTX_MAX];
+
+/* Find the context owning conn_handle; with alloc, claim a free one for it. */
+static struct conn_upd_ctx *conn_upd_ctx_find(uint16_t conn_handle, bool alloc)
+{
+	struct conn_upd_ctx *free_ctx = NULL;
+
+	for (size_t i = 0; i < sizeof(s_conn_upd) / sizeof(s_conn_upd[0]); i++) {
+		if (s_conn_upd[i].in_use && s_conn_upd[i].conn_handle == conn_handle) {
+			if (alloc) {
+				s_conn_upd[i].tries = 0; /* a new link on a reused handle */
+			}
+			return &s_conn_upd[i];
+		}
+		if (!s_conn_upd[i].in_use && free_ctx == NULL) {
+			free_ctx = &s_conn_upd[i];
+		}
+	}
+	if (alloc && free_ctx != NULL) {
+		free_ctx->in_use = true;
+		free_ctx->conn_handle = conn_handle;
+		free_ctx->tries = 0;
+	}
+	return alloc ? free_ctx : NULL;
+}
 
 /**
  * Request the BLE connection interval be lowered to 15 ms (the Apple accessory guideline floor) to
@@ -531,15 +575,15 @@ static void request_fast_conn(uint16_t conn_handle)
  */
 static void conn_upd_retry_ev(struct ble_npl_event *ev)
 {
+	struct conn_upd_ctx *ctx = ble_npl_event_get_arg(ev);
 	struct ble_gap_conn_desc desc;
 
-	(void)ev;
-	if (ble_gap_conn_find(s_conn_upd_conn, &desc) != 0 ||
+	if (!ctx->in_use || ble_gap_conn_find(ctx->conn_handle, &desc) != 0 ||
 	    desc.conn_itvl <= CONN_UPD_ITVL_MAX) {
 		return; /* connection gone, or already fast enough */
 	}
-	s_conn_upd_tries++;
-	request_fast_conn(s_conn_upd_conn);
+	ctx->tries++;
+	request_fast_conn(ctx->conn_handle);
 }
 
 /* Arm one retry unless the interval is already acceptable or the budget is
@@ -547,29 +591,42 @@ static void conn_upd_retry_ev(struct ble_npl_event *ev)
  * so one bench line always states the interval the transaction will run at. */
 static void conn_upd_schedule_retry(uint16_t conn_handle)
 {
+	struct conn_upd_ctx *ctx = conn_upd_ctx_find(conn_handle, false);
 	struct ble_gap_conn_desc desc;
 
-	if (ble_gap_conn_find(conn_handle, &desc) != 0) {
+	if (ctx == NULL || ble_gap_conn_find(conn_handle, &desc) != 0) {
 		return;
 	}
 	if (desc.conn_itvl <= CONN_UPD_ITVL_MAX) {
-		LOG_WRN("conn itvl %u us; fast enough, no retry",
+		LOG_WRN("[conn %u] conn itvl %u us; fast enough, no retry", conn_handle,
 			 (unsigned)desc.conn_itvl * 1250u);
 		return;
 	}
-	if (s_conn_upd_tries >= CONN_UPD_MAX_TRIES) {
-		LOG_WRN("conn itvl stuck at %u us after %u tries",
-			 (unsigned)desc.conn_itvl * 1250u, (unsigned)s_conn_upd_tries);
+	if (ctx->tries >= CONN_UPD_MAX_TRIES) {
+		LOG_WRN("[conn %u] conn itvl stuck at %u us after %u tries", conn_handle,
+			 (unsigned)desc.conn_itvl * 1250u, (unsigned)ctx->tries);
 		return;
 	}
-	if (!s_conn_upd_retry_init) {
-		ble_npl_callout_init(&s_conn_upd_retry, nimble_port_get_dflt_eventq(),
-				     conn_upd_retry_ev, NULL);
-		s_conn_upd_retry_init = true;
+	if (!ctx->init) {
+		ble_npl_callout_init(&ctx->retry, nimble_port_get_dflt_eventq(),
+				     conn_upd_retry_ev, ctx);
+		ctx->init = true;
 	}
-	s_conn_upd_conn = conn_handle;
-	ble_npl_callout_reset(&s_conn_upd_retry,
-			      ble_npl_time_ms_to_ticks32(CONN_UPD_RETRY_MS));
+	ble_npl_callout_reset(&ctx->retry, ble_npl_time_ms_to_ticks32(CONN_UPD_RETRY_MS));
+}
+
+/* Release a link's retry context: stop its callout and free the slot. */
+static void conn_upd_ctx_release(uint16_t conn_handle)
+{
+	struct conn_upd_ctx *ctx = conn_upd_ctx_find(conn_handle, false);
+
+	if (ctx == NULL) {
+		return;
+	}
+	if (ctx->init) {
+		ble_npl_callout_stop(&ctx->retry);
+	}
+	ctx->in_use = false;
 }
 
 // NimBLE GAP event callback that handles connection, disconnection, and advertising-related events
@@ -586,7 +643,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 			return 0;
 		}
 		ultrawidelock_lat_begin(); /* walk-up t=0 */
-		s_conn_upd_tries = 0;
+		(void)conn_upd_ctx_find(event->connect.conn_handle, true);
 		request_fast_conn(event->connect.conn_handle);
 		return 0;
 	case BLE_GAP_EVENT_CONN_UPDATE: {
@@ -610,10 +667,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 		return 0;
 	}
 	case BLE_GAP_EVENT_DISCONNECT:
-		LOG_INF("GAP disconnect reason=%d", event->disconnect.reason);
-		if (s_conn_upd_retry_init) {
-			ble_npl_callout_stop(&s_conn_upd_retry);
-		}
+		LOG_INF("GAP disconnect (conn %u) reason=%d", event->disconnect.conn.conn_handle,
+			 event->disconnect.reason);
+		conn_upd_ctx_release(event->disconnect.conn.conn_handle);
 		rssi_poll_stop(); /* a GAP-level drop can race the CoC teardown */
 		ultrawidelock_advertise();
 		return 0;

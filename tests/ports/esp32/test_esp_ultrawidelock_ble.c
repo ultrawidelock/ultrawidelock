@@ -425,9 +425,9 @@ static void t_gap_events(void)
 	fake_gap_conn_desc.conn_itvl = 24; /* 30 ms: slow */
 	fake_last_callout = NULL;
 	okc("slow conn-update rc", fake_gap_event_cb(&ev, fake_gap_event_arg) == 0);
-	okc("retry armed at 120 ms",
+	okc("retry armed at 500 ms",
 	    fake_last_callout != NULL && fake_last_callout->armed &&
-	    fake_last_callout->armed_ticks == 120);
+	    fake_last_callout->armed_ticks == 500);
 	fake_gap_update_calls = 0;
 	fake_last_callout->ev.fn(&fake_last_callout->ev); /* fire the retry */
 	okc("retry re-requested", fake_gap_update_calls == 1);
@@ -462,11 +462,27 @@ static void t_gap_events(void)
 	ev.conn_update.status = 3;
 	okc("failed conn-update rc", fake_gap_event_cb(&ev, fake_gap_event_arg) == 0);
 
-	/* Disconnect stops the retry and re-advertises. */
+	/* Disconnect stops THIS link's retry and re-advertises. The retry state is
+	 * per connection now: arm conn 5's retry again, then drop conn 5. */
+	fake_gap_conn_desc.conn_itvl = 24;
+	ev.type = BLE_GAP_EVENT_CONNECT;
+	ev.connect.status = 0;
+	ev.connect.conn_handle = 5;
+	fake_gap_event_cb(&ev, fake_gap_event_arg); /* fresh budget for conn 5 */
+	ev.type = BLE_GAP_EVENT_CONN_UPDATE;
+	ev.conn_update.status = 0;
+	fake_gap_event_cb(&ev, fake_gap_event_arg);
+	okc("retry re-armed for conn 5", fake_last_callout != NULL && fake_last_callout->armed);
+	/* Hold the retry callout: the disconnect path re-advertises, and that
+	 * arms the tag-refresh callout, which moves fake_last_callout. */
+	struct ble_npl_callout *retry5 = fake_last_callout;
+
 	ev.type = BLE_GAP_EVENT_DISCONNECT;
 	ev.disconnect.reason = 8;
+	ev.disconnect.conn.conn_handle = 5;
 	fake_gap_adv_starts = 0;
 	okc("disconnect rc", fake_gap_event_cb(&ev, fake_gap_event_arg) == 0);
+	okc("disconnect stops conn 5 retry", retry5->armed == 0);
 	okc("disconnect re-advertises", fake_gap_adv_starts == 1);
 
 	ev.type = BLE_GAP_EVENT_ADV_COMPLETE;
