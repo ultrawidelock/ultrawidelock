@@ -1570,12 +1570,20 @@ static void reader_tick_on_host(void)
 	for (int i = 0; i < ULTRAWIDELOCK_MAX_SESSIONS; i++) {
 		struct ultrawidelock_session *s = &s_sessions[i];
 
-		if (s->active &&
-		    ((s->phase_deadline_armed &&
-		      (int32_t)(now_ms - s->phase_deadline_ms) >= 0) ||
-		     (s->overall_deadline_armed &&
-		      (int32_t)(now_ms - s->overall_deadline_ms) >= 0))) {
+		if (!s->active) {
+			continue;
+		}
+		if (s->phase_deadline_armed && (int32_t)(now_ms - s->phase_deadline_ms) >= 0) {
 			session_terminate(s, "credential phase deadline expired");
+		} else if (s->overall_deadline_armed &&
+			   (int32_t)(now_ms - s->overall_deadline_ms) >= 0) {
+			/* The two deadlines read the same in a field log unless the
+			 * phase is named: a Watch that got its Pre-POLL accepted and
+			 * then never ranged sits in PH_ESTABLISHED for the whole
+			 * 30 s, which is not a credential-phase failure at all. */
+			LOG_WRN("[conn %u] session deadline expired in phase %d", s->conn_handle,
+				(int)s->phase);
+			session_terminate(s, "session deadline expired");
 		}
 	}
 

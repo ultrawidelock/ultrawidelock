@@ -88,6 +88,14 @@ bool ultrawidelock_uwb_trusted_range_cm(int32_t *cm_out);
 bool ultrawidelock_uwb_trusted_range_age_cm(int32_t *cm_out, int64_t *age_ms_out);
 
 /**
+ * As ultrawidelock_uwb_last_range_cm(), plus how long ago that range landed. The
+ * store keeps the last distance until the next session clears it, so a bench
+ * reading it without the age cannot tell a live range from one left behind by
+ * a peer that stopped ranging a minute ago.
+ */
+bool ultrawidelock_uwb_last_range_age_cm(int32_t *cm_out, int64_t *age_ms_out);
+
+/**
  * A trusted range AND the initiator's ranging block it was measured in, from
  * ONE latch.
  *

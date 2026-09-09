@@ -143,15 +143,18 @@ static int cmd_status(int argc, char **argv)
 }
 
 #ifdef CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB
-// Shell handler for the "range" command; prints the last measured UWB range in cm, or "no range
-// yet" if none has been recorded. Always returns 0.
+// Shell handler for the "range" command; prints the last measured UWB range in cm and its age,
+// or "no range yet" if none has been recorded. Always returns 0. The age is what tells a
+// stale reading apart: the store keeps the last distance until the next session clears it,
+// so "170 cm" alone reads as a live range long after the peer stopped ranging.
 static int cmd_range(int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
 	int32_t cm;
-	if (ultrawidelock_uwb_last_range_cm(&cm)) {
-		printf("range: %d cm\n", (int)cm);
+	int64_t age_ms;
+	if (ultrawidelock_uwb_last_range_age_cm(&cm, &age_ms)) {
+		printf("range: %d cm (%lld ms ago)\n", (int)cm, (long long)age_ms);
 	} else {
 		printf("no range yet\n");
 	}

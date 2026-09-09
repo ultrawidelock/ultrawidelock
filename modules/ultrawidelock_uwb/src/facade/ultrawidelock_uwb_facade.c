@@ -142,7 +142,12 @@ void ultrawidelock_uwb_stop(void)
  */
 bool ultrawidelock_uwb_last_range_cm(int32_t *cm_out)
 {
-	return fira_session_last_range(cm_out, NULL, NULL, NULL, NULL);
+	return ultrawidelock_uwb_last_range_age_cm(cm_out, NULL);
+}
+
+bool ultrawidelock_uwb_last_range_age_cm(int32_t *cm_out, int64_t *age_ms_out)
+{
+	return fira_session_last_range(cm_out, NULL, NULL, NULL, age_ms_out);
 }
 
 /**

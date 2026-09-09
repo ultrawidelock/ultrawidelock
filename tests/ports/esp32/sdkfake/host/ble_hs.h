@@ -63,19 +63,24 @@ int ble_hs_mbuf_to_flat(const struct os_mbuf *om, void *buf, uint16_t cap, uint1
 
 /* ---- GATT ---- */
 struct ble_gatt_access_ctxt {
+	uint8_t op;
 	struct os_mbuf *om;
 };
+#define BLE_GATT_ACCESS_OP_WRITE_CHR 1
 typedef int (*ble_gatt_access_fn)(uint16_t conn_handle, uint16_t attr_handle,
 				  struct ble_gatt_access_ctxt *ctxt, void *arg);
 
 #define BLE_GATT_SVC_TYPE_PRIMARY 1
 #define BLE_GATT_CHR_F_READ  0x0002
 #define BLE_GATT_CHR_F_WRITE 0x0008
+#define BLE_GATT_CHR_F_WRITE_NO_RSP 0x0004
+#define BLE_GATT_CHR_F_NOTIFY 0x0010
 
 struct ble_gatt_chr_def {
 	const ble_uuid_t *uuid;
 	ble_gatt_access_fn access_cb;
 	uint16_t flags;
+	uint16_t *val_handle;
 };
 struct ble_gatt_svc_def {
 	uint8_t type;
@@ -85,6 +90,8 @@ struct ble_gatt_svc_def {
 
 int ble_gatts_count_cfg(const struct ble_gatt_svc_def *svcs);
 int ble_gatts_add_svcs(const struct ble_gatt_svc_def *svcs);
+int ble_gatts_notify_custom(uint16_t conn_handle, uint16_t chr_val_handle, struct os_mbuf *om);
+struct os_mbuf *ble_hs_mbuf_from_flat(const void *buf, uint16_t len);
 
 /* ---- GAP ---- */
 #define BLE_GAP_EVENT_CONNECT      0
@@ -160,6 +167,16 @@ int ble_gap_conn_find(uint16_t conn_handle, struct ble_gap_conn_desc *out);
 int ble_gap_conn_rssi(uint16_t conn_handle, int8_t *out_rssi);
 int ble_gap_terminate(uint16_t conn_handle, uint8_t reason);
 
+/* GAP listeners live in ble_gap_vars, which ESP-IDF's NimBLE (BLE_STATIC_TO_DYNAMIC,
+ * default y) allocates in ble_gap_init(): registering one before the host is up
+ * is a NULL dereference on the target. The fake counts those instead of crashing. */
+struct ble_gap_event_listener {
+	ble_gap_event_fn fn;
+	void *arg;
+};
+int ble_gap_event_listener_register(struct ble_gap_event_listener *listener,
+				    ble_gap_event_fn fn, void *arg);
+
 /* ---- host config / npl ---- */
 struct ble_hs_cfg_s {
 	void (*sync_cb)(void);
@@ -218,6 +235,13 @@ extern uint8_t fake_gap_terminate_reason;
 extern struct ble_npl_event *fake_eventq[16];       /* posted events, FIFO */
 extern int fake_eventq_count;
 extern struct ble_npl_callout *fake_last_callout;   /* last init'd/reset */
+extern int fake_host_inited;                        /* nimble_port_init() ran */
+extern int fake_gap_listener_early;                 /* registered before it: target NULL deref */
+extern struct ble_gap_event_listener *fake_gap_listener; /* last registered, or NULL */
+extern int fake_gatts_notify_calls;
+extern uint16_t fake_gatts_notify_handle;
+extern uint8_t fake_gatts_notify_data[64];
+extern uint16_t fake_gatts_notify_len;
 void fake_nimble_drain_eventq(void);                /* run + clear posted events */
 void fake_nimble_reset(void);
 

@@ -132,6 +132,27 @@ void test_facade(void)
 	fira_session_set_ccc_range_cm(-400, 14u);
 	T_OK("age.spoof.refused", !ultrawidelock_uwb_trusted_range_age_cm(&cm, &age_ms));
 
+	t_group("last_range_age_cm carries the age without the trust gate");
+	/* The bench "range" command reads the raw store, which keeps the last
+	 * distance until the next session clears it: the age is what separates a
+	 * live reading from one a departed peer left behind. */
+	fira_session_set_ccc_range_cm(150, 15u);
+	cm = -1;
+	age_ms = -1;
+	T_OK("rawage.present", ultrawidelock_uwb_last_range_age_cm(&cm, &age_ms));
+	T_EQ("rawage.cm", cm, 150);
+	T_OK("rawage.nonneg", age_ms >= 0);
+	cm = -1;
+	T_OK("rawage.null.ok", ultrawidelock_uwb_last_range_age_cm(&cm, NULL));
+	T_EQ("rawage.null.cm", cm, 150);
+	/* Raw, not trusted: after an implausible block the last good range is
+	 * still handed out here, exactly as ultrawidelock_uwb_last_range_cm() does,
+	 * while the trusted accessor refuses it. */
+	fira_session_set_ccc_range_cm(-400, 16u);
+	T_OK("rawage.spoof.kept", ultrawidelock_uwb_last_range_age_cm(&cm, &age_ms));
+	T_EQ("rawage.spoof.cm", cm, 150);
+	T_OK("rawage.spoof.untrusted", !ultrawidelock_uwb_trusted_range_age_cm(&cm, &age_ms));
+
 	/* Leave the fira store cleared for any later reader. */
 	fira_session_set_provisioned_ursk(NULL);
 }

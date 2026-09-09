@@ -867,6 +867,7 @@ extern int mfk_lat_marks[32];
 extern int mfk_lat_reports;
 extern int mfk_last_have;
 extern int32_t mfk_last_cm;
+extern int64_t mfk_last_age_ms; /* ultrawidelock_uwb_last_range_age_cm hands this back */
 extern int mfk_trusted_have;
 extern int32_t mfk_trusted_cm;
 /* The ranging block a trusted range came from. The two-anchor gate pairs on it,

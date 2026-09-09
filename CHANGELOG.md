@@ -10,7 +10,24 @@ tag was cut.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixes for anyone running v0.5.0 on ESP32-S3
+
+- **The image booted only with the update service turned off.** With
+  `CONFIG_ULTRAWIDELOCK_DFU_ESP32=y` (the default) the board crashed in
+  `app_main` before Matter started. The DFU service armed its NimBLE
+  disconnect listener while handing its definition to CHIP, and on ESP-IDF
+  the host's GAP state does not exist until CHIP starts it. The listener is
+  now armed by the first write to the service instead. A host test pins the
+  order.
+- **`range` says how old the distance is.** The console kept printing the
+  last distance a departed peer left behind ("170 cm" for a minute after the
+  phone stopped ranging), which read as ranging having frozen. It now prints
+  `range: 170 cm (61234 ms ago)`. New SDK accessor:
+  `ultrawidelock_uwb_last_range_age_cm()`.
+- **The 30 s session deadline is logged apart from the 5 s phase deadline,
+  with the phase it hit.** Both used to read "credential phase deadline
+  expired". A Watch whose Pre-POLL was accepted and that then never ranged
+  is not a credential failure, and the next field log will say so.
 
 ## [0.5.0] - 2026-09-09
 

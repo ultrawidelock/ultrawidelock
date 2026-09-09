@@ -1024,6 +1024,7 @@ int mfk_lat_marks[32];
 int mfk_lat_reports;
 int mfk_last_have;
 int32_t mfk_last_cm;
+int64_t mfk_last_age_ms;
 void (*mfk_range_listener)(void);
 
 static struct ble_gatt_svc_def mfk_ultrawidelock_svc = {1};
@@ -1219,6 +1220,17 @@ bool ultrawidelock_uwb_last_range_cm(int32_t *cm_out)
 		return false;
 	}
 	*cm_out = mfk_last_cm;
+	return true;
+}
+
+bool ultrawidelock_uwb_last_range_age_cm(int32_t *cm_out, int64_t *age_ms_out)
+{
+	if (!ultrawidelock_uwb_last_range_cm(cm_out)) {
+		return false;
+	}
+	if (age_ms_out != nullptr) {
+		*age_ms_out = mfk_last_age_ms;
+	}
 	return true;
 }
 
@@ -1422,6 +1434,7 @@ void mfk_reset(void)
 	memset(mfk_lat_marks, 0, sizeof(mfk_lat_marks));
 	mfk_lat_reports = 0;
 	mfk_last_have = 0;
+	mfk_last_age_ms = 0;
 	mfk_trusted_have = 0;
 	mfk_trusted_block = 0;
 	/* Back to permitting: a test that vetoed must not leave the next one
