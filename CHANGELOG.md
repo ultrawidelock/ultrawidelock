@@ -31,6 +31,23 @@ tag was cut.
   failed; salt field 1 unavailable`, twice, at ~44 s), nothing retried it, and
   every credential session was torn down at AUTH0. The derivation now brings
   the backend up itself, so it succeeds whichever arrives first.
+- **"No Response" in Home once the reader was up, on every boot.** A
+  commissioned lock with the credential reader running had ~7 KiB of internal
+  heap left (`status`: 7164 B free, 3584 B largest block, 108 B least ever),
+  and Matter needs a ~1.5 KiB packet buffer per reply: every hub poll ended in
+  `PacketBuffer: pool EMPTY`, lwIP `ERR_MEM`, `esp-aes: Failed to allocate
+  memory` and a failed CASE, subscriptions could not be resumed after a
+  reboot, and the phone tap kept working because BLE's buffers are
+  pre-allocated. Stock Matter devices win their RAM back by dropping BLE
+  after commissioning; this lock cannot. The image now keeps the Wi-Fi
+  driver's non-critical code, the heap, ring-buffer and FreeRTOS APIs in
+  flash instead of IRAM (on the S3 that IRAM is the same pool malloc draws
+  from), holds 6 static Wi-Fi RX buffers instead of 10, and gives the reader
+  task the 6 KiB its high-water mark showed it uses rather than 12. Measured
+  out of `door_lock.map`: 42,752 B less IRAM (119,296 -> 76,544), the same
+  bytes back as heap, plus ~6.4 KiB of RX buffers and 6 KiB of stack at run
+  time. The `hamqtt` variant had already taken the Wi-Fi half of this and
+  measured 7135 B -> 28240 B free on the same board.
 - **`status` reports internal RAM:** free now, largest single block, and the
   least ever free since boot, so the headroom commissioning leaves is a number
   rather than a guess.

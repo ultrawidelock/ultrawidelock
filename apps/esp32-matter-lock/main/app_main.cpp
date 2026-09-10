@@ -561,11 +561,12 @@ static void start_ultrawidelock_reader_once(void)
 		return;
 	}
 	started = true;
-	/* 12 KiB, not the previous 8: ultrawidelock_reader_start_attached() runs a deep chain
-	 * (NimBLE GATT/L2CAP registration, NVS reads, P-256 setup) before the poll loop
-	 * begins. `status` reports the high-water mark so the real headroom is measurable
-	 * rather than assumed. */
-	xTaskCreate(ultrawidelock_reader_task, "ultrawidelock_reader", 12288, nullptr, 5,
+	/* 6 KiB. ultrawidelock_reader_start_attached() runs a deep chain (NimBLE GATT/L2CAP
+	 * registration, NVS reads, P-256 setup) before the poll loop begins, and the 12 KiB
+	 * this used to be was sized for that by guess. `status` reports the high-water
+	 * mark: on a commissioned lock after start it read 9120 B free of 12288, a 3168 B
+	 * peak, so 6144 keeps ~3 KiB of margin and returns 6 KiB to the heap Matter needs. */
+	xTaskCreate(ultrawidelock_reader_task, "ultrawidelock_reader", 6144, nullptr, 5,
 		    &ultrawidelock_reader_task_handle);
 	ESP_LOGI(TAG, "credential reader (attach mode) task started");
 }
