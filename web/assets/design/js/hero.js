@@ -32,7 +32,7 @@
      each cited line from the C tree and fails if the value has moved off it.
      Keep the format; it is load-bearing, not decoration. */
   var FW = {
-    UNLOCK_RANGE_CM: 100,     // apps/esp32-matter-lock/main/app_main.cpp:145
+    UNLOCK_RANGE_CM: 100,     // apps/esp32-matter-lock/main/app_main.cpp:146
     CHIP_FREQ_HZ: 499200000,  // modules/ultrawidelock_dw3000/dwt_uwb_driver/deca_device_api.h:61
     TICKS_PER_CYCLE: 128,     // modules/ultrawidelock_dw3000/dwt_uwb_driver/deca_device_api.h:59
   };

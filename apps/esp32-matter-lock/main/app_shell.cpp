@@ -35,6 +35,7 @@
 #include "freertos/task.h"
 #endif
 
+#include <esp_heap_caps.h> // the internal-RAM readout in `status`
 #include "app_shell.h"
 #include <app_priv.h> // app_commissioning_window_open, app_print_onboarding_codes
 #include "door_lock_manager.h"
@@ -116,6 +117,14 @@ static int cmd_status(int argc, char **argv)
 	       col((feature_map & 0x2000) ? C_OK : C_BAD), (feature_map & 0x2000) ? "y" : "n",
 	       col(C_RST), col((feature_map & 0x4000) ? C_OK : C_BAD),
 	       (feature_map & 0x4000) ? "y" : "n", col(C_RST));
+	/* Internal RAM: free now, the largest single block (a Wi-Fi transmit buffer
+	 * or a Matter packet needs ~1.6 KB of it in one piece) and the least ever
+	 * free since boot -- commissioning is where that low mark gets set. */
+	unsigned largest = (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+	printf("heap      : %u B free, %s%u B largest%s, %u B min ever\n",
+	       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+	       col(largest < 4096 ? C_BAD : C_OK), largest, col(C_RST),
+	       (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
 
 #ifdef CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB
 	int32_t cm;

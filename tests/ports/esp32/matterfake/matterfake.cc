@@ -163,6 +163,13 @@ int mfk_cw_close_calls;
 uint32_t mfk_cw_open_rc;
 uint16_t mfk_cw_last_timeout;
 int mfk_cw_last_adv = -1;
+int mfk_failsafe_armed;
+int mfk_timer_pending;
+int mfk_timer_starts;
+uint32_t mfk_timer_last_ms;
+uint32_t mfk_timer_start_rc;
+static chip::System::TimerCompleteCallback mfk_timer_cb;
+static void *mfk_timer_arg;
 
 namespace chip {
 
@@ -209,6 +216,38 @@ CommissioningWindowManager &Server::GetCommissioningWindowManager()
 	return mgr;
 }
 
+app::FailSafeContext &Server::GetFailSafeContext()
+{
+	static app::FailSafeContext ctx;
+	return ctx;
+}
+
+bool app::FailSafeContext::IsFailSafeArmed() const
+{
+	return mfk_failsafe_armed != 0;
+}
+
+CHIP_ERROR System::Layer::StartTimer(Clock::Milliseconds32 delay, TimerCompleteCallback cb,
+				     void *appState)
+{
+	mfk_timer_starts++;
+	if (mfk_timer_start_rc != 0) {
+		return ChipError(mfk_timer_start_rc);
+	}
+	mfk_timer_cb = cb;
+	mfk_timer_arg = appState;
+	mfk_timer_last_ms = delay.value;
+	mfk_timer_pending = 1;
+	return CHIP_NO_ERROR;
+}
+
+void System::Layer::CancelTimer(TimerCompleteCallback cb, void *appState)
+{
+	if (mfk_timer_pending && mfk_timer_cb == cb && mfk_timer_arg == appState) {
+		mfk_timer_pending = 0;
+	}
+}
+
 /* ---- device layer --------------------------------------------------------- */
 namespace DeviceLayer {
 
@@ -220,8 +259,23 @@ PlatformManager &PlatformMgr()
 	return inst;
 }
 
+System::Layer &SystemLayer()
+{
+	static System::Layer layer;
+	return layer;
+}
+
 } // namespace DeviceLayer
 } // namespace chip
+
+void mfk_timer_fire(void)
+{
+	if (!mfk_timer_pending) {
+		return;
+	}
+	mfk_timer_pending = 0;
+	mfk_timer_cb(&chip::DeviceLayer::SystemLayer(), mfk_timer_arg);
+}
 
 int mfk_sched_calls;
 uint32_t mfk_sched_rc;
@@ -1379,6 +1433,11 @@ void mfk_reset(void)
 	mfk_cw_last_timeout = 0;
 	mfk_cw_last_adv = -1;
 	mfk_cw_close_calls = 0;
+	mfk_failsafe_armed = 0;
+	mfk_timer_pending = 0;
+	mfk_timer_starts = 0;
+	mfk_timer_last_ms = 0;
+	mfk_timer_start_rc = 0;
 	mfk_btn_register_calls = 0;
 	mfk_btn_last_event = -1;
 	mfk_btn_register_rc = ESP_OK;

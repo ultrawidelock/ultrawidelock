@@ -10,6 +10,34 @@ tag was cut.
 
 ## [Unreleased]
 
+### ESP32-S3: pairing a fresh lock with Apple Home
+
+- **"Unable to add Accessory" on a freshly erased board.** Home commissions a
+  lock twice back to back (its phone's fabric, then its hub's, half a second
+  apart), and the lock started its credential reader the moment the first
+  round completed: from ~80 ms later every Wi-Fi send failed with lwIP
+  `ERR_MEM` (`SendMessage() ... failed: 3000001`), the second round's reports
+  never left the board, and Home gave up after its retries (measured
+  2026-09-10, ESP-IDF v5.5.4). It regressed with the Watch change below:
+  `88df5c7f`, the merge just before it, pairs cleanly with the very same
+  reader start. The reader now waits until the commissioner has been quiet
+  for 20 s: no further CommissioningComplete, no commissioning window open,
+  no fail-safe armed. A commissioned lock rebooting starts the reader at
+  once, as before.
+- **`status` reports internal RAM:** free now, largest single block, and the
+  least ever free since boot, so the headroom commissioning leaves is a number
+  rather than a guess.
+- **The satellite link no longer claims Matter's radio.** It told "already
+  initialised" from `esp_wifi_init()` returning `ESP_ERR_INVALID_STATE`, which
+  ESP-IDF 5.x never does (it answers `ESP_OK` on a radio someone else brought
+  up), so on the lock it took the station for its own: it moved the Wi-Fi
+  config store to RAM, where ESP-IDF keeps later credential changes out of
+  NVS, and re-issued station mode and a start on Matter's running interface.
+  It now asks `esp_wifi_get_mode()` first and only configures a radio nobody
+  has initialised. Not the cause of the pairing failure above (`88df5c7f`
+  pairs with it in place), but it was one reboot away from a lock forgetting
+  a changed Wi-Fi password.
+
 ### The Watch gets in without `trust`
 
 - **A second device on the owner's Apple ID is admitted through its Access
