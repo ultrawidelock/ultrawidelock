@@ -47,6 +47,7 @@
 
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
+#include <platform/CHIPDeviceLayer.h> // DeviceLayer::SystemLayer() — the reader's post-commissioning wait
 // ScheduleWork — also pulled in below, but not unconditionally
 #include <platform/PlatformManager.h>
 #include <setup_payload/OnboardingCodesUtil.h>
@@ -569,6 +570,57 @@ static void start_ultrawidelock_reader_once(void)
 	ESP_LOGI(TAG, "credential reader (attach mode) task started");
 }
 
+/* How long the commissioner must have been quiet -- no CommissioningComplete,
+ * no window open, no fail-safe armed -- before the reader starts. Apple Home
+ * commissions a lock twice back to back (the phone's fabric, then the hub's,
+ * about half a second apart), so a wait shorter than the second round would
+ * land the reader inside it. */
+constexpr uint32_t k_reader_start_quiet_ms = 20000;
+
+static void reader_start_when_quiet(chip::System::Layer *layer, void *arg);
+
+// Arm the wait from a CommissioningComplete event (Matter task): every round of
+// commissioning restarts the same timer. Only a timer that cannot be armed at all
+// starts the reader now, since that node would otherwise never unlock.
+static void reader_start_after_commissioning(void)
+{
+	chip::System::Layer &layer = chip::DeviceLayer::SystemLayer();
+
+	layer.CancelTimer(reader_start_when_quiet, nullptr);
+	CHIP_ERROR err = layer.StartTimer(chip::System::Clock::Milliseconds32(k_reader_start_quiet_ms),
+					  reader_start_when_quiet, nullptr);
+	if (err != CHIP_NO_ERROR) {
+		ESP_LOGE(TAG, "reader start timer failed: %" CHIP_ERROR_FORMAT "; starting now",
+			 err.Format());
+		start_ultrawidelock_reader_once();
+	}
+}
+
+// Timer callback (Matter task): start the reader unless the commissioner is back
+// -- a window open or a fail-safe armed is another round under way -- in which
+// case wait it out. Starting inside a round was the fresh-pairing failure: the
+// reader's task stack, satellite link and UWB bring-up landed on top of the
+// commissioner's CASE and certificate work, every Wi-Fi send then failed with
+// lwIP ERR_MEM from ~80 ms after the reader started (ESP32-S3, 2026-09-10), the
+// second round's reports never left the board and Home gave up with "Unable to
+// add Accessory". A commissioned node rebooting starts the reader straight away
+// as before; the commissioner is not around then.
+static void reader_start_when_quiet(chip::System::Layer *layer, void *arg)
+{
+	(void)layer;
+	(void)arg;
+	chip::Server &server = chip::Server::GetInstance();
+
+	if (server.GetCommissioningWindowManager().IsCommissioningWindowOpen() ||
+	    server.GetFailSafeContext().IsFailSafeArmed()) {
+		ESP_LOGI(TAG, "commissioner still busy; reader start deferred another %u ms",
+			 (unsigned)k_reader_start_quiet_ms);
+		reader_start_after_commissioning();
+		return;
+	}
+	start_ultrawidelock_reader_once();
+}
+
 /* SNTP feeds ONLY the credential advertisement's dynamic-tag expiry (ultrawidelock_ble.c);
  * nothing credential- or Matter-facing consumes it here, so a spoofed server
  * can at worst break approach-unlock. Fail-open: until the first sync the advert carries the
@@ -596,8 +648,8 @@ static void start_sntp_once(void)
 #endif // CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB
 
 // Matter device-event callback: logs commissioning/fabric/BLE lifecycle events and, when credential
-// BLE+UWB support is enabled, starts the credential reader once commissioning completes (Matter
-// releases the BLE advertiser at that point). On the last fabric being removed, reopens a
+// BLE+UWB support is enabled, arms the credential reader's start once commissioning completes (it
+// runs once the commissioner has gone quiet). On the last fabric being removed, reopens a
 // DNS-SD-only commissioning window if one is not already open.
 static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 {
@@ -619,9 +671,10 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 	case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
 		ESP_LOGI(TAG, "Commissioning complete");
 #ifdef CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB
-		// Matter stops advertising when commissioning completes; the reader can
-		// now take the advertiser and run the local BLE+UWB credential transaction.
-		start_ultrawidelock_reader_once();
+		// Matter stops advertising when commissioning completes, but the
+		// commissioner is usually not done with the node: the reader takes
+		// the advertiser once it is (reader_start_when_quiet).
+		reader_start_after_commissioning();
 #endif
 		break;
 

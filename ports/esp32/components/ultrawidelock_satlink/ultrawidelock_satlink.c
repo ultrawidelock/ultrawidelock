@@ -524,22 +524,29 @@ int ultrawidelock_satlink_init(uint8_t role)
 	/*
 	 * WHOEVER OWNS THE RADIO KEEPS IT. On the satellite this is the only
 	 * user of Wi-Fi and the block below brings it up. On the Matter lock,
-	 * Matter may already have initialised, configured and started it -- and
+	 * Matter has already initialised, configured and started it -- and
 	 * forcing STA mode, RAM storage or a restart there would disconnect a
 	 * commissioned node to deliver a distance report. ESP-NOW rides whatever
 	 * interface is already up, so the right move is to touch nothing.
 	 *
-	 * esp_wifi_init returning ESP_ERR_INVALID_STATE is the signal that
-	 * someone got here first; it is not an error and not our radio.
+	 * esp_wifi_init() cannot say who got here first: ESP-IDF 5.x answers
+	 * ESP_OK on a radio someone else already initialised (wifi_init.c,
+	 * s_wifi_inited), so this used to take the lock's radio for its own and
+	 * moved Matter's Wi-Fi config store into RAM. Ask before initialising
+	 * instead: esp_wifi_get_mode() says ESP_ERR_WIFI_NOT_INIT only while
+	 * nobody has.
 	 */
-	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+	wifi_mode_t mode;
 
-	e = esp_wifi_init(&cfg);
-	if (e == ESP_ERR_INVALID_STATE) {
+	if (esp_wifi_get_mode(&mode) != ESP_ERR_WIFI_NOT_INIT) {
 		ESP_LOGI(TAG, "Wi-Fi already up; riding it rather than reconfiguring");
-	} else if (e != ESP_OK) {
-		return e;
 	} else {
+		wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+
+		e = esp_wifi_init(&cfg);
+		if (e != ESP_OK) {
+			return e;
+		}
 		/* Ours to configure. Storage in RAM so this leaves no Wi-Fi
 		 * credentials in NVS beside the link key, and STA mode without
 		 * ever associating: ESP-NOW needs the radio initialised, not a
