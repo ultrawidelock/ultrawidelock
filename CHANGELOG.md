@@ -86,6 +86,30 @@ tag was cut.
   `sdkconfig.defaults`). `prov` lists the issuer keys and, per anchor, the
   issuer that vouched for it.
 
+### Size limits in the credential reader fail loudly
+
+- **A 0xA5 TLV the reader cannot hold ends the transaction with a named
+  reason.** The phone's proprietary-information TLV in Initiate Access
+  Protocol seeds the session-key salt; real phones send 10 bytes and the
+  session keeps 64. One that used a long-form BER length, or outgrew the
+  buffer, was silently treated as absent and the salt fell back to the CSA
+  v1.0 default: a wrong key schedule, which surfaced much later as a GCM
+  failure on AUTH1 that pointed nowhere near the cause. The reader now logs
+  the length byte, terminates with `0xA5 TLV unusable`, and stops scanning at
+  the first TLV it finds rather than reading into its value for another 0xA5.
+  On the ESP32 bench, an Access Document that outgrows the 1,536-byte
+  collection buffer was logged as "truncating" and kept collecting: later
+  chunks that fit were appended and the gapped blob went to the verifier. It
+  is now dropped on the first overflow, the buffer handed back at once, and
+  the rest of the 61XX chain drained without a verdict (the CDK's learn path
+  already rejected it). Value digests and disclosed items past the parser
+  caps (12 and 8 on the CDK, 24 and 16 elsewhere) and text fields cut to 31
+  characters were dropped without a trace; a docType over that length then
+  failed the §7.4 step-4 compare as if it were the wrong type. They are still
+  not errors (a real MSO lists more digests than the disclosed items), but
+  the parsed document now counts them and flags which fields were cut, and
+  the verdict line carries both (`drop=<digests>/<items> tr=<flags>`).
+
 ### Fixes for anyone running v0.5.0 on ESP32-S3
 
 - **The image booted only with the update service turned off.** With

@@ -661,8 +661,82 @@ static void t_parse_malformed(void)
 		b[n] = 0x00; /* 17th item: skipped */
 		chk("17th item skipped", ultrawidelock_stepup_parse_response(b, n + 1, &doc) == 0 &&
 						 doc.n_items == ULTRAWIDELOCK_STEPUP_MAX_ITEMS);
+		chk_eq("17th item counted dropped", (long)doc.n_items_dropped, 1);
 		b[n] = 0xff;
 		chk("17th item skip fail", ultrawidelock_stepup_parse_response(b, n + 1, &doc) == -1);
+	}
+
+	/* ULTRAWIDELOCK_STEPUP_MAX_DIGESTS kept; one more valueDigest is counted, not
+	 * an error: a real MSO lists more digests than the disclosed items. */
+	{
+		static const uint8_t hdr[] = {0xa1, 0x61, 0x32, 0x81, 0xa1, 0x61, 0x31,
+					      0xa1, 0x61, 0x32, 0x84, 0x40, 0xa0};
+		static const uint8_t mso_hdr[] = {0xa1, 0x61, 0x33, 0xa1, 0x61, 0x6e};
+		uint8_t b[1200], mso[1100];
+		size_t n = sizeof(hdr), m = sizeof(mso_hdr);
+		unsigned nd = ULTRAWIDELOCK_STEPUP_MAX_DIGESTS + 1u;
+
+		/* MSO {"3": {"n": {id: h32, ... nd of them}}} */
+		memcpy(mso, mso_hdr, m);
+		if (nd < 24u) {
+			mso[m++] = (uint8_t)(0xa0u | nd);
+		} else {
+			mso[m++] = 0xb8;
+			mso[m++] = (uint8_t)nd;
+		}
+		for (unsigned i = 0; i < nd; i++) {
+			if (i >= 24u) {
+				mso[m++] = 0x18;
+			}
+			mso[m++] = (uint8_t)i;
+			mso[m++] = 0x58;
+			mso[m++] = 0x20;
+			memset(mso + m, (int)i, 32);
+			m += 32;
+		}
+		memcpy(b, hdr, n);
+		b[n++] = 0x59; /* payload bstr: 24(bstr(MSO)) */
+		b[n++] = (uint8_t)((m + 5) >> 8);
+		b[n++] = (uint8_t)(m + 5);
+		b[n++] = 0xd8;
+		b[n++] = 0x18;
+		b[n++] = 0x59;
+		b[n++] = (uint8_t)(m >> 8);
+		b[n++] = (uint8_t)m;
+		memcpy(b + n, mso, m);
+		n += m;
+		b[n++] = 0x58; /* signature: 64 B */
+		b[n++] = 0x40;
+		memset(b + n, 0x51, 64);
+		n += 64;
+		chk("digests over cap parse ok", ultrawidelock_stepup_parse_response(b, n, &doc) == 0);
+		chk_eq("digests kept", (long)doc.n_digests, (long)ULTRAWIDELOCK_STEPUP_MAX_DIGESTS);
+		chk_eq("digests dropped", (long)doc.n_digests_dropped, 1);
+	}
+
+	/* A docType longer than the field is truncated, and the doc says so: the
+	 * step-4 compare then fails for a named reason, not as a wrong type. */
+	{
+		static uint8_t b[400]; /* static: the doc keeps slices into this buffer */
+		size_t n = 324;
+		struct ultrawidelock_stepup_verdict v;
+		struct ultrawidelock_stepup_verify_ctx ctx = base_ctx(SV_KID, SV_KID_len, SV_ISSUER_PUB);
+
+		memcpy(b, SV_GOOD, 324); /* up to the document's docType ("5") value */
+		b[n++] = 0x78;
+		b[n++] = 33;
+		memset(b + n, 'x', 33);
+		n += 33;
+		memcpy(b + n, SV_GOOD + 332, SV_GOOD_len - 332);
+		n += SV_GOOD_len - 332;
+		chk("33-char docType parses", ultrawidelock_stepup_parse_response(b, n, &doc) == 0);
+		chk_eq("33-char docType kept 31", (long)strlen(doc.doc_type), 31);
+		chk("33-char docType flagged",
+		    (doc.truncated & ULTRAWIDELOCK_STEPUP_TRUNC_DOC_TYPE) != 0);
+		g_mode = MODE_ACCEPT;
+		chk("33-char docType reject step 4",
+		    ultrawidelock_stepup_verify(&doc, &ctx, &v) < 0 && v.reject_step == 4 &&
+			    (v.truncated & ULTRAWIDELOCK_STEPUP_TRUNC_DOC_TYPE) != 0);
 	}
 }
 

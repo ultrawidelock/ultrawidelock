@@ -320,6 +320,12 @@ int ultrawidelock_stepup_verify(const struct ultrawidelock_stepup_doc *doc,
 		v->iteration_ok = 1;
 	}
 
+	/* What the parser could not keep, so a step-4 miss on a cut docType or a
+	 * step-3 miss past the digest cap is named in the verdict log. */
+	v->n_digests_dropped = doc->n_digests_dropped;
+	v->n_items_dropped = doc->n_items_dropped;
+	v->truncated = doc->truncated;
+
 	v->valid = v->issuer_key_found && v->sig_ok && v->digests_ok && v->doctype_ok &&
 		   v->time_ok && v->iteration_ok && v->valid_elements > 0;
 	v->reject_step = !v->issuer_key_found ? 1

@@ -232,13 +232,15 @@ static int cb_tag(struct cbor *c, uint64_t *tag)
 	return cb_expect(c, 6, tag);
 }
 
-/* Copy a text string into a fixed char buffer (NUL-terminated, truncated). */
-static void str_copy(char *dst, size_t cap, const uint8_t *s, size_t n)
+/* Copy a text string into a fixed char buffer (NUL-terminated, truncated).
+ * Returns nonzero when it did not fit. */
+static int str_copy(char *dst, size_t cap, const uint8_t *s, size_t n)
 {
 	size_t k = (n < cap - 1) ? n : cap - 1;
 
 	memcpy(dst, s, k);
 	dst[k] = '\0';
+	return k != n;
 }
 
 /* Match a 1-byte text key "1".."9" without allocating. */
@@ -494,6 +496,8 @@ static int parse_value_digests(struct cbor *c, struct ultrawidelock_stepup_doc *
 				doc->digests[doc->n_digests].id = id;
 				memcpy(doc->digests[doc->n_digests].hash, h, 32);
 				doc->n_digests++;
+			} else if (hl == 32u) {
+				doc->n_digests_dropped++;
 			}
 		}
 	}
@@ -527,7 +531,9 @@ static int parse_mso(const uint8_t *mso, size_t mso_len, struct ultrawidelock_st
 			if (cb_tstr(&c, &s, &sl) != 0) {
 				return -1;
 			}
-			str_copy(doc->digest_alg, sizeof(doc->digest_alg), s, sl);
+			if (str_copy(doc->digest_alg, sizeof(doc->digest_alg), s, sl)) {
+				doc->truncated |= ULTRAWIDELOCK_STEPUP_TRUNC_DIGEST_ALG;
+			}
 		} else if (key_is(k, kl, '3')) {
 			if (parse_value_digests(&c, doc) != 0) {
 				return -1;
@@ -539,7 +545,9 @@ static int parse_mso(const uint8_t *mso, size_t mso_len, struct ultrawidelock_st
 			if (cb_tstr(&c, &s, &sl) != 0) {
 				return -1;
 			}
-			str_copy(doc->mso_doc_type, sizeof(doc->mso_doc_type), s, sl);
+			if (str_copy(doc->mso_doc_type, sizeof(doc->mso_doc_type), s, sl)) {
+				doc->truncated |= ULTRAWIDELOCK_STEPUP_TRUNC_MSO_DOC_TYPE;
+			}
 		} else if (key_is(k, kl, '6')) {
 			if (parse_validity(&c, doc) != 0) {
 				return -1;
@@ -768,8 +776,9 @@ static int parse_name_spaces(struct cbor *c, struct ultrawidelock_stepup_doc *do
 		if (cb_tstr(c, &ns, &nsl) != 0 || cb_arr(c, &nit) != 0) {
 			return -1;
 		}
-		if (doc->name_space[0] == '\0') {
-			str_copy(doc->name_space, sizeof(doc->name_space), ns, nsl);
+		if (doc->name_space[0] == '\0' &&
+		    str_copy(doc->name_space, sizeof(doc->name_space), ns, nsl)) {
+			doc->truncated |= ULTRAWIDELOCK_STEPUP_TRUNC_NAME_SPACE;
 		}
 		for (uint64_t j = 0; j < nit; j++) {
 			if (doc->n_items < ULTRAWIDELOCK_STEPUP_MAX_ITEMS) {
@@ -779,6 +788,8 @@ static int parse_name_spaces(struct cbor *c, struct ultrawidelock_stepup_doc *do
 				doc->n_items++;
 			} else if (cb_skip(c) != 0) {
 				return -1;
+			} else {
+				doc->n_items_dropped++;
 			}
 		}
 	}
@@ -847,7 +858,9 @@ static int parse_document(struct cbor *c, struct ultrawidelock_stepup_doc *doc)
 			if (cb_tstr(c, &s, &sl) != 0) {
 				return -1;
 			}
-			str_copy(doc->doc_type, sizeof(doc->doc_type), s, sl);
+			if (str_copy(doc->doc_type, sizeof(doc->doc_type), s, sl)) {
+				doc->truncated |= ULTRAWIDELOCK_STEPUP_TRUNC_DOC_TYPE;
+			}
 		} else if (cb_skip(c) != 0) { /* "3" deviceSigned must be absent (§8.4.2), skip */
 			return -1;
 		}
@@ -913,7 +926,9 @@ int ultrawidelock_stepup_parse_response(const uint8_t *buf, size_t len,
 				return -1;
 			}
 			if (cb_tstr(&vc, &s, &sl) == 0) {
-				str_copy(doc->version, sizeof(doc->version), s, sl);
+				if (str_copy(doc->version, sizeof(doc->version), s, sl)) {
+					doc->truncated |= ULTRAWIDELOCK_STEPUP_TRUNC_VERSION;
+				}
 			}
 		} else if (cb_skip(&c) != 0) { /* unknown */
 			return -1;
