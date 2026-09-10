@@ -923,7 +923,7 @@ static void section_events(void)
 	mfk_timer_fire();
 	okc("quiet commissioner: the reader task starts once",
 	    mfk_task_count == 1 && strcmp(mfk_tasks[0].name, "ultrawidelock_reader") == 0 &&
-		    mfk_tasks[0].stack == 12288 && mfk_tasks[0].prio == 5 &&
+		    mfk_tasks[0].stack == 6144 && mfk_tasks[0].prio == 5 &&
 		    ultrawidelock_reader_task_handle != nullptr && mfk_timer_pending == 0);
 	cb(&ev, 0);
 	mfk_timer_fire();
