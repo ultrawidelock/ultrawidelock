@@ -61,6 +61,10 @@ struct psafake_state {
 	unsigned aead_finish_calls, aead_verify_calls, aead_abort_calls;
 	unsigned export_calls, export_pub_calls, raw_ka_calls;
 	unsigned sign_calls, verify_calls, destroy_calls;
+	/* psa_aead_update() calls whose output buffer overlapped their input.
+	 * PSA leaves that undefined, so a caller decrypting in place must never
+	 * hand it over, however the fake's copy happens to cope. */
+	unsigned aead_update_overlaps;
 	/* ---- replayed ECDSA verification -------------------------------------
 	 *
 	 * There is no P-256 in this host build, so a signature check can only

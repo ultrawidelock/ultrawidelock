@@ -31,7 +31,8 @@ int ultrawidelock_prim_init(void);
 /* CSPRNG. */
 int ultrawidelock_random(uint8_t *out, size_t len);
 
-/* AES-256-GCM. tag_len must be <= 16. Decrypt verifies the tag. */
+/* AES-256-GCM. tag_len must be <= 16. Decrypt verifies the tag, and may decrypt
+ * in place: pt may start at or below ct in the same buffer (never above it). */
 int ultrawidelock_aes256_gcm_encrypt(const uint8_t key[32], const uint8_t *nonce, size_t nonce_len,
 			     const uint8_t *aad, size_t aad_len, const uint8_t *pt, size_t pt_len,
 			     uint8_t *ct, uint8_t *tag, size_t tag_len);
