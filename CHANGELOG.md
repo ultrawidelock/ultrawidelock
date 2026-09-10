@@ -27,6 +27,16 @@ tag was cut.
 - **`status` reports internal RAM:** free now, largest single block, and the
   least ever free since boot, so the headroom commissioning leaves is a number
   rather than a guess.
+- **The satellite link no longer claims Matter's radio.** It told "already
+  initialised" from `esp_wifi_init()` returning `ESP_ERR_INVALID_STATE`, which
+  ESP-IDF 5.x never does (it answers `ESP_OK` on a radio someone else brought
+  up), so on the lock it took the station for its own: it moved the Wi-Fi
+  config store to RAM, where ESP-IDF keeps later credential changes out of
+  NVS, and re-issued station mode and a start on Matter's running interface.
+  It now asks `esp_wifi_get_mode()` first and only configures a radio nobody
+  has initialised. Not the cause of the pairing failure above (`88df5c7f`
+  pairs with it in place), but it was one reboot away from a lock forgetting
+  a changed Wi-Fi password.
 
 ### The Watch gets in without `trust`
 
