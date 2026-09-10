@@ -2007,7 +2007,7 @@ static void sub_persist_load(void)
 		}
 	}
 	if (n > 0u) {
-		LOG_INF("  %u subscription(s) held over the reboot, waiting for their controller",
+		LOG_DBG("  %u subscription(s) held over the reboot, waiting for their controller",
 			n);
 	}
 }
@@ -3693,7 +3693,7 @@ static size_t send_sigma2(const struct matter_case_sigma1 *s1, const uint8_t *ip
 		}
 		memcpy(reply + mh_len + ph_len, s_case.sigma2, s_case.sigma2_len);
 		memset(transcript, 0, sizeof(transcript));
-		LOG_INF("  Sigma1 again -- resending the SAME Sigma2 (%u B, session 0x%04x)",
+		LOG_DBG("  Sigma1 again -- resending the SAME Sigma2 (%u B, session 0x%04x)",
 			(unsigned int)s_case.sigma2_len, (unsigned int)s_case.local_session_id);
 		return mh_len + ph_len + s_case.sigma2_len;
 	}
@@ -3732,7 +3732,7 @@ static size_t send_sigma2(const struct matter_case_sigma1 *s1, const uint8_t *ip
 	 * cheaper than another pairing attempt.
 	 */
 	LOG_HEXDUMP_DBG(reply + mh_len + ph_len, s2_len < 48u ? s2_len : 48u, "sigma2 head");
-	LOG_INF("  Sigma2 out: %u B payload, %u B total, session 0x%04x", (unsigned int)s2_len,
+	LOG_DBG("  Sigma2 out: %u B payload, %u B total, session 0x%04x", (unsigned int)s2_len,
 		(unsigned int)(mh_len + ph_len + s2_len), (unsigned int)s_case.local_session_id);
 	return mh_len + ph_len + s2_len;
 }
@@ -4077,7 +4077,7 @@ static size_t matter_thread_on_datagram_owned(uint8_t *msg, size_t len, uint8_t 
 
 		rc = matter_exchange_recv_in_place(&s_case_x[slot], msg, len, &in);
 		if (rc == MATTER_E_DUP) {
-			LOG_INF("  DUP exchange 0x%04x counter %u; replaying the answer",
+			LOG_DBG("  DUP exchange 0x%04x counter %u; replaying the answer",
 				(unsigned int)in.exchange_id, (unsigned int)in.message_counter);
 			/* I clear on a duplicate means it closes an exchange
 			 * this node opened; recv_impl() re-armed the pending
@@ -4658,7 +4658,7 @@ int matter_commission_init(void)
 			memcpy(s_info.ultrawidelock_group_resolving_key, grk, sizeof(grk));
 			s_info.have_ultrawidelock_group_resolving_key = true;
 			s_info.have_ultrawidelock_reader_config = true;
-			LOG_INF("credential reader configuration restored; attributes readable");
+			LOG_DBG("credential reader configuration restored; attributes readable");
 		for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
 			if (s_info.fabric_acls[i].len == 0u) {
 				continue;
