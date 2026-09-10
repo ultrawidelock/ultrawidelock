@@ -28,6 +28,12 @@ tag was cut.
   with the phase it hit.** Both used to read "credential phase deadline
   expired". A Watch whose Pre-POLL was accepted and that then never ranged
   is not a credential failure, and the next field log will say so.
+- **Every ranging session leaves a one-line post-mortem.** At teardown the
+  listener prints `I: ranging post-mortem: prepoll=N arm=N poll_ok=N
+  poll_fail=N resp=N final=N range=N last_st=...`, the count of each step of
+  the DS-TWR round, through the same printer as `Pre-POLL accepted`. Default
+  on, printed off the critical path, no `uwbdiag` needed. SDK:
+  `ccc_shim_rx_stats_get()`.
 
 ## [0.5.0] - 2026-09-09
 

@@ -288,6 +288,22 @@ void test_prepoll_round(void)
 	T_OK("range.latched", fira_session_last_range(&cm, NULL, NULL, NULL, NULL));
 	T_EQ("range.cm", cm, 234);
 	{
+		/* The post-mortem tallies: every step of this round happened once,
+		 * off the five Pre-POLLs this fixture accepted on the way to its
+		 * arm (bootstrap, stride, and the warm-index walk above), and the
+		 * wrong-session Final_Data still counted as a decode attempt. */
+		struct ccc_shim_rx_stats st;
+
+		ccc_shim_rx_stats_get(&st);
+		T_EQ("stats.prepoll_ok", st.prepoll_ok, 5);
+		T_EQ("stats.poll_arm", st.poll_arm, 1);
+		T_EQ("stats.poll_ok", st.poll_ok, 1);
+		T_EQ("stats.poll_fail", st.poll_fail, 0);
+		T_EQ("stats.resp_tx", st.resp_tx, 1);
+		T_EQ("stats.final_data", st.final_data, 2);
+		T_EQ("stats.range", st.range, 1);
+	}
+	{
 		uint32_t generation = fira_session_range_generation();
 
 		stash_frame(frame, len, 0x3210000ull);
@@ -471,4 +487,12 @@ void test_prepoll_round(void)
 	ultrawidelock_uwb_stop();
 	ccc_shim_rx_try_prepoll(len);
 	T_OK("stopped.not_awaiting", !ccc_shim_rx_awaiting_poll());
+	{
+		/* The stop printed the session's post-mortem and zeroed it, so the
+		 * stop-before-start of the next session has nothing to report. */
+		struct ccc_shim_rx_stats st;
+
+		ccc_shim_rx_stats_get(&st);
+		T_EQ("stats.zeroed_by_stop", st.prepoll_ok + st.poll_arm + st.range, 0);
+	}
 }
