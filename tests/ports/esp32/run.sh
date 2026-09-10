@@ -90,7 +90,7 @@ echo "== host: ultrawidelock_stepup worker vs FreeRTOS fakes =="
 # The queue/task doubles are pumped synchronously; the decrypt/parse/verify
 # underneath is the real shared-core code on the stepup_vectors.h KATs.
 WBIN="$(mktemp -t esp_stepup_worker.XXXXXX)"
-cc -std=c11 -O1 -Wall -Wextra -DCONFIG_ULTRAWIDELOCK_CRED_STEPUP=1 \
+cc -std=c11 -O1 -Wall -Wextra -DCONFIG_ULTRAWIDELOCK_CRED_STEPUP=1 -DCONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH=1 \
    -I "$SDKFAKE" -I "$HERE" -I "$SHARED" -I "$CRED/include" -I "$CRED/src" \
    "$HERE/test_esp_stepup_worker.c" \
    "$ESP_COMPONENTS/ultrawidelock_reader/ultrawidelock_stepup_worker.c" \
@@ -139,7 +139,7 @@ CSBIN="$(mktemp -t esp_app_shell.XXXXXX)"
 # clock_gettime(CLOCK_MONOTONIC): glibc declares neither without it, while macOS
 # declares both unconditionally, so omitting it builds locally and fails on CI.
 cc -std=c11 -O1 -Wall -Wextra -D_POSIX_C_SOURCE=200809L \
-   -DCONFIG_ULTRAWIDELOCK_CRED_STEPUP=1 -DULTRAWIDELOCK_PORT_HOST \
+   -DCONFIG_ULTRAWIDELOCK_CRED_STEPUP=1 -DCONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH=1 -DULTRAWIDELOCK_PORT_HOST \
 	-I "$SDKFAKE" -I "$READER_MAIN" \
    -I "$UWB_INC" \
    -I "$CRED/include" -I "$ULTRAWIDELOCK_PORT_INC" \

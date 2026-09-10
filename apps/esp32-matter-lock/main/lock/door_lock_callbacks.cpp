@@ -131,10 +131,39 @@ bool emberAfPluginDoorLockSetCredential(chip::EndpointId endpointId, uint16_t cr
 			ok = false;
 		}
 	}
+	// The issuer key (type 6) is not an anchor -- no phone presents it -- but it
+	// is the key the step-up Access Document is signed under, and the only way a
+	// device the hub never sends a SetCredential for (an Apple Watch on the
+	// owner's Apple ID, in every field log so far) is admitted: the reader asks
+	// such a device for its document and learns the key this issuer signed.
+	if (ok && credentialStatus == DlCredentialStatus::kOccupied &&
+	    credentialData.size() == 65 &&
+	    credentialType == CredentialTypeEnum::kAliroCredentialIssuerKey) {
+		int rc = ultrawidelock_reader_provision_add_issuer(credentialData.data(),
+								   credentialIndex,
+								   ULTRAWIDELOCK_CRED_INDEX_NONE);
+		ESP_LOGI(TAG, "credential issuer key -> reader issuer store (index=%u rc=%d)",
+			 static_cast<unsigned>(credentialIndex), rc);
+		// rc == 1 is "already held". A negative rc means the reader cannot
+		// verify documents under this issuer, so reporting success would leave
+		// the controller believing the home's devices can all get in.
+		if (rc < 0) {
+			ok = false;
+		}
+	}
 	// A ClearCredential arrives here as an Available status with empty data
 	// (door-lock-server.cpp calls this hook to erase the slot), so this is the
 	// only place the reader learns that a credential was revoked. Without it a
 	// key removed in the controller's UI kept opening the door.
+	if (ok && credentialStatus == DlCredentialStatus::kAvailable &&
+	    credentialType == CredentialTypeEnum::kAliroCredentialIssuerKey) {
+		int rc = ultrawidelock_reader_provision_remove_issuer(credentialIndex);
+		ESP_LOGW(TAG, "credential issuer key REVOKED with its learned keys (index=%u rc=%d)",
+			 static_cast<unsigned>(credentialIndex), rc);
+		if (rc < 0) {
+			ok = false;
+		}
+	}
 	if (ok && credentialStatus == DlCredentialStatus::kAvailable &&
 	    (credentialType == CredentialTypeEnum::kAliroEvictableEndpointKey ||
 	     credentialType == CredentialTypeEnum::kAliroNonEvictableEndpointKey)) {

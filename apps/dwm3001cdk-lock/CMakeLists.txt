@@ -97,6 +97,29 @@ target_sources(app PRIVATE
 	${ULTRAWIDELOCK_DYNTAG_SRCS}
 )
 target_link_libraries(app PRIVATE ultrawidelock_prim)
+if(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+	# The step-up (Access Document) phase: the verifier plus the wire codecs
+	# role (DeviceResponse parser, SessionData/ENVELOPE codecs). Compiled the
+	# way the ESP32 reader component compiles them; ultrawidelock_stepup.c is
+	# allowlisted as NOT_MANIFESTED in tests/tooling/port_purity_check.sh.
+	ultrawidelock_role_sources("${CRED}/roles/wire_codecs.list" ULTRAWIDELOCK_WIRE_CODEC_SRCS)
+	target_sources(app PRIVATE
+		"${CRED}/src/ultrawidelock_stepup.c"
+		${ULTRAWIDELOCK_WIRE_CODEC_SRCS}
+	)
+	# This part is out of both RAM and flash (nRF52833: 128 KiB / 423.5 KiB app
+	# slot, 98% of each before step-up). The parsed document is static RAM: an
+	# Access Document carries a handful of elements (the spec example has 3
+	# digests and 1 item), so 12 and 8 keep the struct near 1.3 KiB instead of
+	# 2.2. LEAN drops what this reader never reads from the document -- the
+	# dates (no trusted clock), the COSE alg label and the x5chain (only a
+	# provisioned issuer may vouch) -- for about 0.6 KiB of flash.
+	target_compile_definitions(app PRIVATE
+		ULTRAWIDELOCK_STEPUP_MAX_DIGESTS=12u
+		ULTRAWIDELOCK_STEPUP_MAX_ITEMS=8u
+		ULTRAWIDELOCK_STEPUP_LEAN=1
+	)
+endif()
 if(CONFIG_ULTRAWIDELOCK_BENCH_CRED_O2)
 	set_source_files_properties(
 		"${CRED}/src/ultrawidelock_reader.c"

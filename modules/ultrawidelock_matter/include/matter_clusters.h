@@ -588,12 +588,16 @@ struct matter_lock_event {
 /** 0 is the only defined credential BLE advertising version. */
 #define MATTER_ALIRO_BLE_ADV_VERSION         0u
 /**
- * NumberOfAliroCredentialIssuerKeysSupported (0x0087).
+ * NumberOfAliroCredentialIssuerKeysSupported (0x0087): how many issuer keys the
+ * reader's store holds, which is ULTRAWIDELOCK_ISSUER_MAX.
  *
- * An issuer key is accepted and deliberately never becomes an anchor, so no
- * store bounds this one. Left at the ESP32 lock's kAliroKeysSupported.
+ * An issuer key is not an anchor, but it is kept: it is the trust root the
+ * step-up Access Document is signed under, which is how a device the hub never
+ * installed a key for (a Watch on the owner's Apple ID) gets in. The store
+ * refuses rather than evicts once full, so the number told to the controller
+ * has to be the number it holds. The port BUILD_ASSERTs the two agree.
  */
-#define MATTER_ALIRO_ISSUER_KEYS_SUPPORTED   10u
+#define MATTER_ALIRO_ISSUER_KEYS_SUPPORTED   5u
 /**
  * NumberOfAliroEndpointKeysSupported (0x0088): how many endpoint keys the
  * reader's trust store actually holds, which is ULTRAWIDELOCK_TRUST_MAX.

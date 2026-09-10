@@ -231,6 +231,47 @@ int ultrawidelock_reader_provision_remove_type(uint8_t cred_type);
  *  persisted). */
 int ultrawidelock_reader_provision_remove_user(uint16_t user_index);
 
+/* ---- Credential issuer keys (Matter SetCredential type 6) ---------------- *
+ * Not anchors: no phone presents one. They are the trust roots the step-up
+ * Access Document (Aliro §8.4) is signed under. Apple Home installs the home's
+ * issuer key and one endpoint key per phone; a device it never installs a key
+ * for -- an Apple Watch on the owner's Apple ID, in every field log so far --
+ * is admitted the way the Nordic reference lock admits it: the reader asks the
+ * unknown device for its Access Document, verifies the issuer signature against
+ * a key installed here, checks the document's deviceKey is the key the device
+ * just signed AUTH1 with, and learns that key as an evictable endpoint anchor
+ * (type 7) bound to the issuer. Needs CONFIG_ULTRAWIDELOCK_CRED_STEPUP; without
+ * it an unknown key is rejected as before. */
+
+/** How many issuer keys the reader holds: what NumberOfAliroCredentialIssuerKeysSupported
+ *  must report, so a controller is never told it may install a key the reader
+ *  then refuses. Mirrors ULTRAWIDELOCK_ISSUER_MAX (asserted equal in the reader),
+ *  spelled out here so a C++ delegate needs only this header. */
+#define ULTRAWIDELOCK_READER_ISSUER_KEYS_MAX 5u
+
+/** Add an issuer public key (uncompressed P-256, 65 bytes) presented over Matter
+ *  SetCredential type 6 and persist it. @p cred_index and @p user_index are the
+ *  Door Lock identifiers it arrived under. Returns 0 (added), 1 (already present,
+ *  indices rebound), -1 (not a P-256 point, or ULTRAWIDELOCK_ISSUER_MAX issuers
+ *  already held -- an issuer is never evicted), or the store's negative errno. */
+int ultrawidelock_reader_provision_add_issuer(const uint8_t pub[65], uint16_t cred_index,
+					      uint16_t user_index);
+
+/** Revoke the issuer installed as Door Lock type-6 credential @p cred_index, and
+ *  with it every anchor the reader learned from a document it signed. Returns 0
+ *  (revoked and persisted), 1 (no issuer carries that index), or the store's
+ *  negative errno (revoked in RAM, not persisted). */
+int ultrawidelock_reader_provision_remove_issuer(uint16_t cred_index);
+
+/** Register a listener told each time the reader learns an endpoint key from an
+ *  Access Document: the Door Lock credential type (7), the credential and user
+ *  indices it was filed under, and the key. Runs on the BLE-host task inside the
+ *  transaction, so keep it short and hop threads before touching a Matter store.
+ *  NULL unregisters. */
+void ultrawidelock_reader_set_credential_learned_listener(
+	void (*cb)(uint8_t cred_type, uint16_t cred_index, uint16_t user_index,
+		   const uint8_t cred_pub[65]));
+
 /** Read back the PUBLIC half of the stored identity: what a controller is
  *  entitled to see, and only that.
  *
@@ -274,7 +315,9 @@ int ultrawidelock_reader_import_blob(const uint8_t *buf, size_t len);
 
 /* ---- Step-up (Access Document) bench control (CONFIG_ULTRAWIDELOCK_CRED_STEPUP) ---- *
  * Back the `ultrawidelock-stepup` console command. Both are no-ops unless the reader was
- * built with the step-up phase enabled. */
+ * built with the step-up phase enabled. Distinct from the learn path above, which
+ * requests a document on its own whenever an unknown key is presented and an
+ * issuer key is held. */
 
 /** Arm a one-shot Access-Document request: the next transaction is forced into
  *  the standard phase and requests + verifies a document. Never per-unlock; the

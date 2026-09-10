@@ -33,7 +33,8 @@ static const uint8_t k_dev_sign_priv[ULTRAWIDELOCK_READER_PRIV_LEN] = {
 };
 
 static const uint8_t k_magic[4] = {'A', 'P', 'R', 'V'};
-#define ULTRAWIDELOCK_PROV_VERSION   0x04u /* current: adds the Matter credential/user indices */
+#define ULTRAWIDELOCK_PROV_VERSION   0x05u /* current: adds issuer keys + anchor->issuer bindings */
+#define ULTRAWIDELOCK_PROV_VERSION_4 0x04u /* legacy: Matter credential/user indices, no issuers */
 #define ULTRAWIDELOCK_PROV_VERSION_3 0x03u /* legacy: kp_valid + kpersistent, no indices */
 #define ULTRAWIDELOCK_PROV_VERSION_2 0x02u /* legacy: grk but no kpersistent (still parsed) */
 #define ULTRAWIDELOCK_PROV_VERSION_1 0x01u /* legacy: no grk (still parsed) */
@@ -58,9 +59,9 @@ void ultrawidelock_prov_dev_default(struct ultrawidelock_reader_identity *id,
 }
 
 /**
- * Serialize reader identity and trust store into a provisioning blob (v4 format with grk,
- * kpersistent and the Matter credential/user indices). Returns 0 on success, -1 if count exceeds
- * ULTRAWIDELOCK_TRUST_MAX or buffer too small.
+ * Serialize reader identity and trust store into a provisioning blob (v5 format with grk,
+ * kpersistent, the Matter credential/user indices, the anchor->issuer bindings and the issuer
+ * keys). Returns 0 on success, -1 if a count exceeds its capacity or the buffer is too small.
  * Outputs blob and sets out_len.
  */
 int ultrawidelock_prov_serialize(const struct ultrawidelock_reader_identity *id,
@@ -68,15 +69,17 @@ int ultrawidelock_prov_serialize(const struct ultrawidelock_reader_identity *id,
 				 size_t cap, size_t *out_len)
 {
 	uint8_t count = (ts != NULL) ? ts->count : 0u;
+	uint8_t issuers = (ts != NULL) ? ts->issuer_count : 0u;
 
-	if (count > ULTRAWIDELOCK_TRUST_MAX) {
+	if (count > ULTRAWIDELOCK_TRUST_MAX || issuers > ULTRAWIDELOCK_ISSUER_MAX) {
 		return -1;
 	}
 
 	size_t need = ULTRAWIDELOCK_PROV_BLOB_HDR + ULTRAWIDELOCK_READER_ID_LEN +
 		      ULTRAWIDELOCK_READER_PRIV_LEN + ULTRAWIDELOCK_GRK_LEN + 1u +
 		      (size_t)count * ULTRAWIDELOCK_CRED_PUB_LEN + 1u +
-		      (size_t)count * ULTRAWIDELOCK_KPERSISTENT_LEN + (size_t)count * 5u;
+		      (size_t)count * ULTRAWIDELOCK_KPERSISTENT_LEN + (size_t)count * 6u + 1u +
+		      (size_t)issuers * (ULTRAWIDELOCK_CRED_PUB_LEN + 4u);
 
 	if (out == NULL || cap < need) {
 		return -1;
@@ -120,6 +123,19 @@ int ultrawidelock_prov_serialize(const struct ultrawidelock_reader_identity *id,
 		*p++ = (uint8_t)(ts->user_index[i] >> 8);
 		*p++ = (uint8_t)(ts->user_index[i] & 0xFFu);
 	}
+	/* v5 tail: which issuer vouched for each anchor, then the issuers. */
+	for (uint8_t i = 0; i < count; i++) {
+		*p++ = ts->anchor_issuer[i];
+	}
+	*p++ = issuers;
+	for (uint8_t i = 0; i < issuers; i++) {
+		memcpy(p, ts->issuer_pub[i], ULTRAWIDELOCK_CRED_PUB_LEN);
+		p += ULTRAWIDELOCK_CRED_PUB_LEN;
+		*p++ = (uint8_t)(ts->issuer_cred_index[i] >> 8);
+		*p++ = (uint8_t)(ts->issuer_cred_index[i] & 0xFFu);
+		*p++ = (uint8_t)(ts->issuer_user_index[i] >> 8);
+		*p++ = (uint8_t)(ts->issuer_user_index[i] & 0xFFu);
+	}
 
 	if (out_len != NULL) {
 		*out_len = (size_t)(p - out);
@@ -130,8 +146,8 @@ int ultrawidelock_prov_serialize(const struct ultrawidelock_reader_identity *id,
 /**
  * Deserialize a provisioning blob (magic + version + flags + reader_id + sign_priv + grk +
  * credential count + cred_pub list + kpersistent bitmask + kpersistent list + Matter index pairs).
- * Supports v1 (no grk), v2 (grk, no kpersistent), v3 (no indices), v4 (all). Returns 0 on success,
- * -1 on invalid magic/version/length/count.
+ * Supports v1 (no grk), v2 (grk, no kpersistent), v3 (no indices), v4 (no issuers), v5 (all).
+ * Returns 0 on success, -1 on invalid magic/version/length/count.
  */
 int ultrawidelock_prov_deserialize(const uint8_t *buf, size_t len,
 				   struct ultrawidelock_reader_identity *id,
@@ -142,12 +158,19 @@ int ultrawidelock_prov_deserialize(const uint8_t *buf, size_t len,
 		return -1;
 	}
 
-	/* grk was added in v2, the kpersistent tail in v3; v1/v2 blobs are still
-	 * parsed for back-compat (their credentials simply have no Kpersistent). */
+	/* grk was added in v2, the kpersistent tail in v3, the Matter indices in
+	 * v4, the issuers in v5; older blobs are still parsed for back-compat
+	 * (their credentials simply lack whatever came later). */
 	size_t grk_len;
 	int has_kp = 0;
 	int has_idx = 0;
+	int has_issuers = 0;
 	if (buf[4] == ULTRAWIDELOCK_PROV_VERSION) {
+		grk_len = ULTRAWIDELOCK_GRK_LEN;
+		has_kp = 1;
+		has_idx = 1;
+		has_issuers = 1;
+	} else if (buf[4] == ULTRAWIDELOCK_PROV_VERSION_4) {
 		grk_len = ULTRAWIDELOCK_GRK_LEN;
 		has_kp = 1;
 		has_idx = 1;
@@ -178,7 +201,19 @@ int ultrawidelock_prov_deserialize(const uint8_t *buf, size_t len,
 	if (has_idx) {
 		want += (size_t)count * 5u;
 	}
-	if (count > ULTRAWIDELOCK_TRUST_MAX || len != want) {
+	uint8_t issuers = 0u;
+
+	if (has_issuers) {
+		/* The issuer count sits after the per-anchor bindings; it has to be
+		 * read before the total length can be checked. */
+		want += (size_t)count + 1u;
+		if (len < want || count > ULTRAWIDELOCK_TRUST_MAX) {
+			return -1;
+		}
+		issuers = buf[want - 1u];
+		want += (size_t)issuers * (ULTRAWIDELOCK_CRED_PUB_LEN + 4u);
+	}
+	if (count > ULTRAWIDELOCK_TRUST_MAX || issuers > ULTRAWIDELOCK_ISSUER_MAX || len != want) {
 		return -1;
 	}
 
@@ -219,6 +254,21 @@ int ultrawidelock_prov_deserialize(const uint8_t *buf, size_t len,
 				ts->cred_index[i] = (uint16_t)(((uint16_t)k[1] << 8) | k[2]);
 				ts->user_index[i] = (uint16_t)(((uint16_t)k[3] << 8) | k[4]);
 				k += 5u;
+			}
+		}
+		/* memset also left anchor_issuer at ULTRAWIDELOCK_ANCHOR_ISSUER_NONE and
+		 * issuer_count at 0, which is what a pre-v5 blob truthfully has. */
+		if (has_issuers) {
+			for (uint8_t i = 0; i < count; i++) {
+				ts->anchor_issuer[i] = *k++;
+			}
+			ts->issuer_count = *k++;
+			for (uint8_t i = 0; i < issuers; i++) {
+				memcpy(ts->issuer_pub[i], k, ULTRAWIDELOCK_CRED_PUB_LEN);
+				k += ULTRAWIDELOCK_CRED_PUB_LEN;
+				ts->issuer_cred_index[i] = (uint16_t)(((uint16_t)k[0] << 8) | k[1]);
+				ts->issuer_user_index[i] = (uint16_t)(((uint16_t)k[2] << 8) | k[3]);
+				k += 4u;
 			}
 		}
 	}
@@ -303,6 +353,7 @@ int ultrawidelock_prov_trust_add(struct ultrawidelock_trust_store *ts,
 	ts->cred_type[ts->count] = 0u;
 	ts->cred_index[ts->count] = ULTRAWIDELOCK_CRED_INDEX_NONE;
 	ts->user_index[ts->count] = ULTRAWIDELOCK_CRED_INDEX_NONE;
+	ts->anchor_issuer[ts->count] = ULTRAWIDELOCK_ANCHOR_ISSUER_NONE;
 	ts->count++;
 	/* 2 tells the caller an anchor was dropped to make room, which is worth
 	 * a log line -- it is the only visible sign the store is undersized. */
@@ -342,6 +393,7 @@ int ultrawidelock_prov_trust_remove_at(struct ultrawidelock_trust_store *ts, int
 		ts->cred_type[i] = ts->cred_type[i + 1u];
 		ts->cred_index[i] = ts->cred_index[i + 1u];
 		ts->user_index[i] = ts->user_index[i + 1u];
+		ts->anchor_issuer[i] = ts->anchor_issuer[i + 1u];
 		/*
 		 * The bit must follow its key. try_fast_auth() pairs
 		 * kpersistent[i] with cred_pub[i] and never consults the trust
@@ -363,6 +415,7 @@ int ultrawidelock_prov_trust_remove_at(struct ultrawidelock_trust_store *ts, int
 	ts->cred_type[ts->count] = 0u;
 	ts->cred_index[ts->count] = ULTRAWIDELOCK_CRED_INDEX_NONE;
 	ts->user_index[ts->count] = ULTRAWIDELOCK_CRED_INDEX_NONE;
+	ts->anchor_issuer[ts->count] = ULTRAWIDELOCK_ANCHOR_ISSUER_NONE;
 	return 0;
 }
 
@@ -423,6 +476,153 @@ int ultrawidelock_prov_find_cred_index(const struct ultrawidelock_trust_store *t
 		}
 	}
 	return -1;
+}
+
+/* ---- credential issuer keys ---------------------------------------------- */
+
+/**
+ * Slot of an issuer public key, or -1 if it is not stored (or ts is NULL).
+ */
+int ultrawidelock_prov_issuer_find(const struct ultrawidelock_trust_store *ts,
+				   const uint8_t pub[ULTRAWIDELOCK_CRED_PUB_LEN])
+{
+	if (ts == NULL) {
+		return -1;
+	}
+	for (uint8_t i = 0; i < ts->issuer_count && i < ULTRAWIDELOCK_ISSUER_MAX; i++) {
+		if (memcmp(ts->issuer_pub[i], pub, ULTRAWIDELOCK_CRED_PUB_LEN) == 0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Slot of the issuer a Matter admin installed as credential index cred_index (type 6), or -1.
+ * ULTRAWIDELOCK_CRED_INDEX_NONE never matches: an issuer no admin named is not addressable.
+ */
+int ultrawidelock_prov_issuer_find_index(const struct ultrawidelock_trust_store *ts,
+					 uint16_t cred_index)
+{
+	if (ts == NULL || cred_index == ULTRAWIDELOCK_CRED_INDEX_NONE) {
+		return -1;
+	}
+	for (uint8_t i = 0; i < ts->issuer_count && i < ULTRAWIDELOCK_ISSUER_MAX; i++) {
+		if (ts->issuer_cred_index[i] == cred_index) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Add an issuer public key, or rebind the indices of one already stored. Returns 0 added, 1 already
+ * present (indices rebound), -1 if the key is not an uncompressed point or the store is full. Full
+ * REFUSES: an issuer is a trust root the admin placed, the cluster reports exactly this many slots,
+ * and evicting one silently would revoke every key it vouched for.
+ */
+int ultrawidelock_prov_issuer_add(struct ultrawidelock_trust_store *ts,
+				  const uint8_t pub[ULTRAWIDELOCK_CRED_PUB_LEN], uint16_t cred_index,
+				  uint16_t user_index)
+{
+	if (ts == NULL || pub[0] != 0x04u) {
+		return -1;
+	}
+	int slot = ultrawidelock_prov_issuer_find(ts, pub);
+
+	if (slot >= 0) {
+		ts->issuer_cred_index[slot] = cred_index;
+		ts->issuer_user_index[slot] = user_index;
+		return 1;
+	}
+	if (ts->issuer_count >= ULTRAWIDELOCK_ISSUER_MAX) {
+		return -1;
+	}
+	memcpy(ts->issuer_pub[ts->issuer_count], pub, ULTRAWIDELOCK_CRED_PUB_LEN);
+	ts->issuer_cred_index[ts->issuer_count] = cred_index;
+	ts->issuer_user_index[ts->issuer_count] = user_index;
+	ts->issuer_count++;
+	return 0;
+}
+
+/**
+ * Drop the issuer at idx together with every anchor it vouched for, closing both gaps. Anchors
+ * bound to a later issuer follow it down one slot. Returns the number of anchors dropped, or -1
+ * if idx is not an occupied issuer slot.
+ */
+int ultrawidelock_prov_issuer_remove_at(struct ultrawidelock_trust_store *ts, int idx)
+{
+	if (ts == NULL || idx < 0 || (unsigned)idx >= ts->issuer_count ||
+	    ts->issuer_count > ULTRAWIDELOCK_ISSUER_MAX) {
+		return -1;
+	}
+	uint8_t bound = (uint8_t)(idx + 1); /* anchor_issuer is 1 + slot */
+	int dropped = 0;
+
+	/* Downwards, because removing anchor i shifts every later anchor into it. */
+	for (int i = (int)ts->count - 1; i >= 0; i--) {
+		if (ts->anchor_issuer[i] == bound) {
+			(void)ultrawidelock_prov_trust_remove_at(ts, i);
+			dropped++;
+		} else if (ts->anchor_issuer[i] > bound) {
+			ts->anchor_issuer[i]--;
+		}
+	}
+	for (uint8_t i = (uint8_t)idx; i + 1u < ts->issuer_count; i++) {
+		memcpy(ts->issuer_pub[i], ts->issuer_pub[i + 1u], ULTRAWIDELOCK_CRED_PUB_LEN);
+		ts->issuer_cred_index[i] = ts->issuer_cred_index[i + 1u];
+		ts->issuer_user_index[i] = ts->issuer_user_index[i + 1u];
+	}
+	ts->issuer_count--;
+	memset(ts->issuer_pub[ts->issuer_count], 0, ULTRAWIDELOCK_CRED_PUB_LEN);
+	ts->issuer_cred_index[ts->issuer_count] = ULTRAWIDELOCK_CRED_INDEX_NONE;
+	ts->issuer_user_index[ts->issuer_count] = ULTRAWIDELOCK_CRED_INDEX_NONE;
+	return dropped;
+}
+
+/**
+ * Bind the anchor at idx to the issuer at issuer_slot. Returns 0, or -1 if either is not an
+ * occupied slot.
+ */
+int ultrawidelock_prov_anchor_issuer_set(struct ultrawidelock_trust_store *ts, int idx,
+					 int issuer_slot)
+{
+	if (ts == NULL || idx < 0 || (unsigned)idx >= ts->count || issuer_slot < 0 ||
+	    (unsigned)issuer_slot >= ts->issuer_count) {
+		return -1;
+	}
+	ts->anchor_issuer[idx] = (uint8_t)(issuer_slot + 1);
+	return 0;
+}
+
+/**
+ * Issuer slot the anchor at idx was learned under, or -1 when none vouched for it.
+ */
+int ultrawidelock_prov_anchor_issuer(const struct ultrawidelock_trust_store *ts, int idx)
+{
+	if (ts == NULL || idx < 0 || (unsigned)idx >= ts->count ||
+	    ts->anchor_issuer[idx] == ULTRAWIDELOCK_ANCHOR_ISSUER_NONE) {
+		return -1;
+	}
+	return (int)ts->anchor_issuer[idx] - 1;
+}
+
+/**
+ * Lowest Matter credential index in 1..ULTRAWIDELOCK_TRUST_MAX no anchor of cred_type carries, or
+ * 0 when they are all taken. Indices are scoped to their type, so only same-type anchors count.
+ */
+uint16_t ultrawidelock_prov_free_cred_index(const struct ultrawidelock_trust_store *ts,
+					    uint8_t cred_type)
+{
+	if (ts == NULL) {
+		return 0u;
+	}
+	for (uint16_t index = 1u; index <= ULTRAWIDELOCK_TRUST_MAX; index++) {
+		if (ultrawidelock_prov_find_cred_index(ts, cred_type, index) < 0) {
+			return index;
+		}
+	}
+	return 0u;
 }
 
 /**

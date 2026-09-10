@@ -222,6 +222,21 @@ static void schedule_bolt_lock(void)
 	});
 }
 
+// A key the reader learned from a device's Access Document -- an Apple Watch on the
+// owner's Apple ID, in every field log so far -- rather than from a Matter
+// SetCredential. Runs on the BLE-host task inside the transaction: one log line, so
+// the monitor says why an approach that used to end in "credential key NOT trusted"
+// now unlocks. First 4 bytes of the point only.
+static void on_credential_learned(uint8_t cred_type, uint16_t cred_index, uint16_t user_index,
+				  const uint8_t cred_pub[65])
+{
+	ESP_LOGI(TAG,
+		 "credential LEARNED from its Access Document: type %u cred idx %u user idx %u, "
+		 "key %02x%02x%02x%02x...",
+		 static_cast<unsigned>(cred_type), static_cast<unsigned>(cred_index),
+		 static_cast<unsigned>(user_index), cred_pub[0], cred_pub[1], cred_pub[2], cred_pub[3]);
+}
+
 // Range-latch listener: runs on the UWB RX path, so it only stamps the latency
 // trace and wakes the reader task; the unlock decision itself stays on the task.
 static void on_uwb_range(void)
@@ -265,6 +280,7 @@ static void ultrawidelock_reader_task(void *arg)
 	}
 
 	ultrawidelock_uwb_set_range_listener(on_uwb_range);
+	ultrawidelock_reader_set_credential_learned_listener(on_credential_learned);
 #ifdef CONFIG_ENABLE_HA_MQTT
 	/* Access verdicts reach Home Assistant straight from the trust gate, which
 	 * runs on the BLE-host task; the listener only queues, never publishes. */

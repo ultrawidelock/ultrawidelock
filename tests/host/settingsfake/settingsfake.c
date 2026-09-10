@@ -21,7 +21,7 @@
  * and a single-pass erase would have looked correct. */
 #define FAKE_MAX_KEYS 64
 #define FAKE_MAX_NAME 64
-#define FAKE_MAX_VAL  768
+#define FAKE_MAX_VAL  1088 /* >= ULTRAWIDELOCK_KV_VALUE_MAX: the real NVS backend has no cap this low */
 
 struct fake_entry {
 	char name[FAKE_MAX_NAME];

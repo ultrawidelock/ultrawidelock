@@ -1016,9 +1016,10 @@ MANIFEST_ROOTS=(
 # ratchet discipline as RATCHET: an entry that becomes manifested, or stops
 # existing, is a FAILURE — the allowlist can only shrink deliberately.
 #
-#   ultrawidelock_stepup.c      the step-up worker's engine half; only the ESP reader
-#                       component compiles it, and its worker body is gated to
-#                       empty without CONFIG_ULTRAWIDELOCK_CRED_STEPUP
+#   ultrawidelock_stepup.c      the step-up verifier; the ESP reader component compiles
+#                       it always (its worker body is gated to empty without
+#                       CONFIG_ULTRAWIDELOCK_CRED_STEPUP) and the DWM3001CDK app only
+#                       under that option, so neither role list can carry it
 #   ultrawidelock_assert_ec.c   the P-256 half of the assert pair — the only one with a
 #                       crypto dependency, so it cannot join wire_codecs
 #   uwb_rxdiag.c        Zephyr-module only: the ESP port omits it and stubs the

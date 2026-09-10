@@ -72,10 +72,12 @@ int main(void)
 	okc("trust.count2", ts.count == 2);
 
 	okc("ser.ok", ultrawidelock_prov_serialize(&id, &ts, blob, sizeof(blob), &n) == 0);
-	/* v4 adds a 5-byte (type, credential index, user index) binding per anchor. */
+	/* v4 adds a 5-byte (type, credential index, user index) binding per anchor;
+	 * v5 a 1-byte issuer binding per anchor, then the issuer count (0 here). */
 	okc("ser.len", n == ULTRAWIDELOCK_PROV_BLOB_HDR + ULTRAWIDELOCK_READER_ID_LEN +
 			   ULTRAWIDELOCK_READER_PRIV_LEN + ULTRAWIDELOCK_GRK_LEN + 1u +
-			   2u * ULTRAWIDELOCK_CRED_PUB_LEN + 1u + 2u * ULTRAWIDELOCK_KPERSISTENT_LEN + 2u * 5u);
+			   2u * ULTRAWIDELOCK_CRED_PUB_LEN + 1u + 2u * ULTRAWIDELOCK_KPERSISTENT_LEN + 2u * 5u +
+			   2u * 1u + 1u);
 	okc("ser.magic", blob[0] == 'A' && blob[1] == 'P' && blob[2] == 'R' &&
 			 blob[3] == 'V');
 
@@ -92,7 +94,7 @@ int main(void)
 	ultrawidelock_prov_dev_default(&id, &ts);
 	okc("ser.dev.ok", ultrawidelock_prov_serialize(&id, &ts, blob, sizeof(blob), &n) == 0);
 	okc("ser.dev.len", n == ULTRAWIDELOCK_PROV_BLOB_HDR + ULTRAWIDELOCK_READER_ID_LEN +
-			       ULTRAWIDELOCK_READER_PRIV_LEN + ULTRAWIDELOCK_GRK_LEN + 1u + 1u);
+			       ULTRAWIDELOCK_READER_PRIV_LEN + ULTRAWIDELOCK_GRK_LEN + 1u + 1u + 1u);
 	okc("de.dev.ok", ultrawidelock_prov_deserialize(blob, n, &id2, &ts2) == 0);
 	okc("de.dev.flag", id2.is_dev == true);
 	okc("de.dev.count", ts2.count == 0);
@@ -157,13 +159,14 @@ int main(void)
 	okc("kp.de-unset-zero",
 	    memcmp(ts2.kpersistent[0], zeros, ULTRAWIDELOCK_KPERSISTENT_LEN) == 0);
 
-	/* a v2 blob (no kpersistent tail, no index tail) still parses, with no
-	 * Kpersistent -- the two tails are dropped from the v4 blob's length */
+	/* a v2 blob (no kpersistent tail, no index tail, no issuer tail) still
+	 * parses, with no Kpersistent -- the three tails are dropped from the v5
+	 * blob's length (the v5 tail here is two anchor bindings + the count) */
 	memcpy(bad, blob, n);
 	bad[4] = 0x02; /* ULTRAWIDELOCK_PROV_VERSION_2 */
 	okc("kp.v2-compat",
 	    ultrawidelock_prov_deserialize(
-		    bad, n - 1u - 2u * ULTRAWIDELOCK_KPERSISTENT_LEN - 2u * 5u, &id2, &ts2) == 0);
+		    bad, n - 1u - 2u * ULTRAWIDELOCK_KPERSISTENT_LEN - 2u * 5u - 3u, &id2, &ts2) == 0);
 	okc("kp.v2-no-kp", ts2.kp_valid == 0 && ts2.count == 2 &&
 				   memcmp(ts2.cred_pub[1], k1, ULTRAWIDELOCK_CRED_PUB_LEN) == 0);
 
@@ -171,7 +174,7 @@ int main(void)
 	 * provisioned before revocation is carrying */
 	memcpy(bad, blob, n);
 	bad[4] = 0x03; /* ULTRAWIDELOCK_PROV_VERSION_3 */
-	okc("kp.v3-compat", ultrawidelock_prov_deserialize(bad, n - 2u * 5u, &id2, &ts2) == 0);
+	okc("kp.v3-compat", ultrawidelock_prov_deserialize(bad, n - 2u * 5u - 3u, &id2, &ts2) == 0);
 	okc("kp.v3-keeps-kp", ts2.kp_valid == 0x02 && ts2.count == 2);
 	okc("kp.v3-no-index", ts2.cred_index[0] == ULTRAWIDELOCK_CRED_INDEX_NONE &&
 				      ts2.cred_index[1] == ULTRAWIDELOCK_CRED_INDEX_NONE);
@@ -227,6 +230,100 @@ int main(void)
 	okc("fill.overflow_evicts", ultrawidelock_prov_trust_add(&ts, over) == 2);
 	okc("fill.still_full", ts.count == ULTRAWIDELOCK_TRUST_MAX);
 	okc("fill.newest_kept", ultrawidelock_prov_trust_check(&ts, over) == 0);
+
+	printf("\n== issuer keys / learned anchors / v5 round-trip / v4 compat ==\n");
+	{
+		/*
+		 * The issuer key (Matter SetCredential type 6) is the trust root the
+		 * Access Document is signed under. An endpoint key the reader LEARNS
+		 * from a document is an anchor bound to that issuer, so revoking the
+		 * issuer revokes every key it vouched for and nothing else.
+		 */
+		uint8_t i0[ULTRAWIDELOCK_CRED_PUB_LEN], i1[ULTRAWIDELOCK_CRED_PUB_LEN];
+		uint8_t a0[ULTRAWIDELOCK_CRED_PUB_LEN], a1[ULTRAWIDELOCK_CRED_PUB_LEN],
+			a2[ULTRAWIDELOCK_CRED_PUB_LEN];
+
+		memset(&ts, 0, sizeof(ts));
+		mkpub(i0, 0x11);
+		mkpub(i1, 0x22);
+		okc("iss.empty_find", ultrawidelock_prov_issuer_find(&ts, i0) == -1);
+		okc("iss.add0", ultrawidelock_prov_issuer_add(&ts, i0, 1u, 1u) == 0);
+		okc("iss.find0", ultrawidelock_prov_issuer_find(&ts, i0) == 0);
+		okc("iss.find_index0", ultrawidelock_prov_issuer_find_index(&ts, 1u) == 0);
+		okc("iss.none_never_matches",
+		    ultrawidelock_prov_issuer_find_index(&ts, ULTRAWIDELOCK_CRED_INDEX_NONE) == -1);
+		okc("iss.dedup", ultrawidelock_prov_issuer_add(&ts, i0, 1u, 1u) == 1);
+		/* Apple re-installs a key under a fresh index when a user is re-added. */
+		okc("iss.rebind", ultrawidelock_prov_issuer_add(&ts, i0, 3u, 2u) == 1);
+		okc("iss.rebound", ts.issuer_cred_index[0] == 3u && ts.issuer_user_index[0] == 2u);
+		okc("iss.add1", ultrawidelock_prov_issuer_add(&ts, i1, 2u, 2u) == 0);
+		okc("iss.count2", ts.issuer_count == 2u);
+		badpt[0] = 0x02;
+		okc("iss.badpoint", ultrawidelock_prov_issuer_add(&ts, badpt, 4u, 1u) == -1);
+
+		/* Anchors: a0 learned under i0, a1 learned under i1, a2 installed by
+		 * the admin (no issuer). */
+		mkpub(a0, 0x40);
+		mkpub(a1, 0x50);
+		mkpub(a2, 0x60);
+		okc("iss.anchor_a0", ultrawidelock_prov_trust_add(&ts, a0) == 0);
+		okc("iss.anchor_a1", ultrawidelock_prov_trust_add(&ts, a1) == 0);
+		okc("iss.anchor_a2", ultrawidelock_prov_trust_add(&ts, a2) == 0);
+		okc("iss.bind_a0", ultrawidelock_prov_anchor_issuer_set(&ts, 0, 0) == 0);
+		okc("iss.bind_a1", ultrawidelock_prov_anchor_issuer_set(&ts, 1, 1) == 0);
+		okc("iss.bind_bad_slot", ultrawidelock_prov_anchor_issuer_set(&ts, 2, 5) == -1);
+		okc("iss.bind_bad_anchor", ultrawidelock_prov_anchor_issuer_set(&ts, 7, 0) == -1);
+		okc("iss.a2_unbound", ultrawidelock_prov_anchor_issuer(&ts, 2) == -1);
+		okc("iss.a1_bound", ultrawidelock_prov_anchor_issuer(&ts, 1) == 1);
+		/* A learned key takes the lowest free index of ITS type: the admin's
+		 * evictable key sits at 1, so the reader's first learned key is 2. */
+		(void)ultrawidelock_prov_cred_bind_set(&ts, 2, 7u, 1u, 1u);
+		okc("iss.free_index_type7", ultrawidelock_prov_free_cred_index(&ts, 7u) == 2);
+		okc("iss.free_index_type8", ultrawidelock_prov_free_cred_index(&ts, 8u) == 1);
+
+		/* v5 round trip carries every issuer and every binding. */
+		okc("v5.ser", ultrawidelock_prov_serialize(&id, &ts, blob, sizeof(blob), &n) == 0);
+		okc("v5.fits_blob_max", n <= ULTRAWIDELOCK_PROV_BLOB_MAX);
+		okc("v5.version", blob[4] == 0x05);
+		memset(&ts2, 0xEE, sizeof(ts2));
+		okc("v5.de", ultrawidelock_prov_deserialize(blob, n, &id2, &ts2) == 0);
+		okc("v5.same", memcmp(&ts, &ts2, sizeof(ts)) == 0);
+
+		/* Revoking i0 drops a0 (learned under it), keeps a1 and re-points it at
+		 * the issuer that slid into slot 0, and leaves the admin's a2 alone. */
+		okc("iss.remove0", ultrawidelock_prov_issuer_remove_at(&ts, 0) == 1);
+		okc("iss.count1", ts.issuer_count == 1u &&
+					  ultrawidelock_prov_issuer_find(&ts, i1) == 0);
+		okc("iss.a0_gone", ultrawidelock_prov_trust_check(&ts, a0) == -1);
+		okc("iss.a1_kept", ultrawidelock_prov_trust_find(&ts, a1) == 0 &&
+					   ultrawidelock_prov_anchor_issuer(&ts, 0) == 0);
+		okc("iss.a2_kept", ultrawidelock_prov_trust_find(&ts, a2) == 1 &&
+					   ultrawidelock_prov_anchor_issuer(&ts, 1) == -1);
+		okc("iss.remove_bad", ultrawidelock_prov_issuer_remove_at(&ts, 3) == -1);
+
+		/* Issuers never evict: a controller installed them and the cap it was
+		 * told (NumberOfAliroCredentialIssuerKeysSupported) is this one. */
+		memset(&ts, 0, sizeof(ts));
+		for (unsigned i = 0; i < ULTRAWIDELOCK_ISSUER_MAX; i++) {
+			uint8_t kk[ULTRAWIDELOCK_CRED_PUB_LEN];
+
+			mkpub(kk, (uint8_t)(0x80 + i * 4));
+			okc("iss.fill", ultrawidelock_prov_issuer_add(&ts, kk, (uint16_t)(i + 1u), 1u) == 0);
+		}
+		okc("iss.full_refuses", ultrawidelock_prov_issuer_add(&ts, over, 9u, 1u) == -1);
+		okc("iss.full_count", ts.issuer_count == ULTRAWIDELOCK_ISSUER_MAX);
+
+		/* A v4 blob (this store, before issuers existed) still loads, with no
+		 * issuer and every anchor unbound. With no anchors and no issuers a v5
+		 * blob is a v4 blob plus the one issuer-count byte. */
+		memset(&ts, 0, sizeof(ts));
+		okc("v4.ser_v5", ultrawidelock_prov_serialize(&id, &ts, blob, sizeof(blob), &n) == 0);
+		blob[4] = 0x04;
+		memset(&ts2, 0xEE, sizeof(ts2));
+		okc("v4.parse", ultrawidelock_prov_deserialize(blob, n - 1u, &id2, &ts2) == 0);
+		okc("v4.no_issuers", ts2.issuer_count == 0u);
+		okc("v4.rejects_v5_tail", ultrawidelock_prov_deserialize(blob, n, &id2, &ts2) == -1);
+	}
 
 	printf("\n== corrupt count / v1 compat / NULL store ==\n");
 	{

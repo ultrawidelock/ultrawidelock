@@ -146,8 +146,15 @@ int ultrawidelock_stepup_build_envelope(const uint8_t *data, size_t data_len, in
 int ultrawidelock_stepup_build_get_response(uint8_t le, uint8_t *out, size_t cap, size_t *out_len);
 
 /* ---- parsed DeviceResponse (slices into the caller's buffer) ---- */
+/* Parser capacity. Overridable per build (-D) because struct ultrawidelock_stepup_doc
+ * is sized by them and lives in static RAM on the reader: the DWM3001CDK trims
+ * both to fit an nRF52833. Every consumer of a build must see one value. */
+#ifndef ULTRAWIDELOCK_STEPUP_MAX_DIGESTS
 #define ULTRAWIDELOCK_STEPUP_MAX_DIGESTS 24u
+#endif
+#ifndef ULTRAWIDELOCK_STEPUP_MAX_ITEMS
 #define ULTRAWIDELOCK_STEPUP_MAX_ITEMS   16u
+#endif
 #define ULTRAWIDELOCK_STEPUP_ID_MAX      32u
 
 /**

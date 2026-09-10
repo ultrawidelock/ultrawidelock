@@ -10,6 +10,54 @@ tag was cut.
 
 ## [Unreleased]
 
+### The Watch gets in without `trust`
+
+- **A second device on the owner's Apple ID is admitted through its Access
+  Document.** Apple Home installs the home's credential issuer key
+  (SetCredential type 6) and one endpoint key per iPhone, and never sends a
+  SetCredential for a Watch on the same Apple ID (every field log so far: no
+  `invoke: ... cluster 0x0101` line while the Watch retried). The Watch
+  therefore presented a key no anchor matched and every approach ended in
+  `credential key NOT trusted`. That is how Aliro means it to work, not a
+  missing install: the certified Nordic reference lock keeps the issuer key
+  and, when an unknown key is presented, requests the device's Access
+  Document in the step-up phase, verifies the issuer signature, checks the
+  document's `deviceKey` is the key the device just signed AUTH1 with, and
+  stores the key (nRF Connect SDK door-lock add-on,
+  `access_manager_impl.cpp`: `_ShouldRequestAccessDocument`,
+  `_VerifyAccessCredential`, `ProcessAccessDocument`; Matter 1.4 names the
+  same thing in `OperationSourceEnum` as "user change operation was a step-up
+  credential provisioning as defined in [Aliro]"). Both boards now do the
+  same. The issuer key is stored instead of dropped; a presented key no
+  anchor matches is asked for its `matter1` document, and only a document a
+  stored issuer signed over that very key learns it as an evictable endpoint
+  anchor (type 7, next free index, the issuer's user) with its Kpersistent,
+  so the next approach takes the ordinary fast path. The unlock waits on that
+  verdict. A document that fails any §7.4 check, vouches for another key,
+  brings its own certificate instead of a stored issuer, or is declined is
+  rejected exactly as before, with the operands in the log. Clearing the
+  issuer key (ClearCredential type 6, or ClearUser) revokes every key learned
+  under it. The CDK's RTT `trust` command is gone with it (the image had no
+  flash for both; `prov` stays); the ESP32 keeps `ultrawidelock trust` for
+  the bench. Learned keys are not reported back over
+  Matter, which matches the reference lock (its known issue AL-727: "User
+  credentials provisioned in the Step-up phase ... are not exported to
+  Matter"). Host tests walk the learn, the fast path after it, and each
+  rejection (`tests/shared/test_ultrawidelock_reader.c`, section G).
+- **`NumberOfAliroCredentialIssuerKeysSupported` now says 5, the number the
+  reader actually holds**, and a sixth issuer is refused rather than evicted:
+  an issuer is a trust root the admin placed, and dropping one silently would
+  revoke every key it vouched for.
+- **Provisioning blob v5.** Issuer keys and each anchor's issuer binding ride
+  the same NVS record; v1 to v4 blobs still load, with no issuer and every
+  anchor unbound. The record cap `ULTRAWIDELOCK_KV_VALUE_MAX` grows from 768
+  to 1088 bytes, which the FreeRTOS port's three static record buffers
+  follow.
+- The step-up phase is built into both lock images now
+  (`CONFIG_ULTRAWIDELOCK_CRED_STEPUP=y` in `prj.conf` and
+  `sdkconfig.defaults`). `prov` lists the issuer keys and, per anchor, the
+  issuer that vouched for it.
+
 ### Fixes for anyone running v0.5.0 on ESP32-S3
 
 - **The image booted only with the update service turned off.** With
@@ -70,14 +118,12 @@ same BLE session, once its wearer is back).
 
 ### DWM3001CDK
 
-- **`trust` and `prov` can be typed at the RTT terminal.** The Matter image
-  has no shell, so a second device whose endpoint key the Home hub never
-  delivered (an Apple Watch, in every field log so far) was rejected on
-  every approach with no way past it short of the ESP32. `make monitor`
-  feeds its `Terminal>` prompt into RTT down-buffer 0; the main loop now
-  drains it for those two lines, the same two the ESP32 lock answers as
-  `ultrawidelock trust` / `ultrawidelock prov`. Bench only, and `trust`
-  admits whichever credential was presented last.
+- **`prov` can be typed at the RTT terminal.** The Matter image has no
+  shell; `make monitor` feeds its `Terminal>` prompt into RTT down-buffer 0
+  and the main loop drains it, the same line the ESP32 lock answers as
+  `ultrawidelock prov`. Bench only. (A `trust` line that admitted whichever
+  credential was presented last was here briefly for the Watch; the learn
+  path above replaces it and took its flash.)
 
 ## [0.5.0] - 2026-09-09
 

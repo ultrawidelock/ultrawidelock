@@ -24,21 +24,14 @@ static void run_line(const char *t)
 	while (*t == ' ' || *t == '\t') {
 		t++;
 	}
-	if (strcmp(t, "trust") == 0) {
-		int rc = ultrawidelock_reader_trust_last();
-
-		if (rc == 0) {
-			printk("trust: added last-presented credential + saved\n");
-		} else if (rc == 1) {
-			printk("trust: nothing to add (no credential presented, or already "
-			       "trusted)\n");
-		} else {
-			printk("trust: FAILED (rc=%d)\n", rc);
-		}
-	} else if (strcmp(t, "prov") == 0) {
+	/* `trust` (admit whichever key was presented last) is gone from this image:
+	 * a second device on the owner's Apple ID is learned from its Access
+	 * Document now, and the flash it cost is the flash that learn path needed.
+	 * The ESP32 shell keeps `ultrawidelock trust` for the bench. */
+	if (strcmp(t, "prov") == 0) {
 		ultrawidelock_reader_prov_print();
 	} else if (*t != '\0') {
-		printk("bench: unknown '%s' (trust | prov)\n", t);
+		printk("bench: unknown '%s' (prov)\n", t);
 	}
 }
 

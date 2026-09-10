@@ -135,8 +135,9 @@ extern "C" {
 #define ULTRAWIDELOCK_KV_KEY_NONE 0xffffu
 
 /* The largest single value. Sized by the credential provisioning blob, the
- * biggest thing any consumer stores. */
-#define ULTRAWIDELOCK_KV_VALUE_MAX 768u
+ * biggest thing any consumer stores (ULTRAWIDELOCK_PROV_BLOB_MAX, 1052 bytes
+ * since the blob gained the issuer keys). */
+#define ULTRAWIDELOCK_KV_VALUE_MAX 1088u
 
 enum ultrawidelock_kv_result {
 	ULTRAWIDELOCK_KV_OK = 0,

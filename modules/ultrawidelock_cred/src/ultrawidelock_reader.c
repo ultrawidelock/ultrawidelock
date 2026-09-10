@@ -268,8 +268,60 @@ static bool s_peer_state_unknown;
  * into the expedited-standard phase and requests an Access Document after
  * EXCHANGE. Set by the REPL task, consumed by the BLE-host task in start_auth.
  * Guarded by s_prov_lock. The verdict lives in the worker (ultrawidelock-stepup status). */
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
 static bool s_stepup_armed;
 #endif
+
+/* One DeviceResponse collection buffer for the whole reader rather than one per
+ * session: step-up runs in at most one transaction at a time in practice (the
+ * collision is a second phone walking up while a Watch is being learned, and
+ * that transaction is simply told no), and the nRF52833 cannot spare a second
+ * copy. Owned by a connection handle while it collects; STEPUP_SD_FREE when
+ * idle. The bench worker's job copy (2 KiB) is sized to take it whole. */
+#define STEPUP_SD_MAX  1536u
+#define STEPUP_SD_FREE 0xFFFFu
+static uint8_t s_stepup_sd[STEPUP_SD_MAX];
+static size_t s_stepup_sd_len;
+static uint16_t s_stepup_sd_owner = STEPUP_SD_FREE;
+
+/* The learn path verifies on the BLE-host task, inside the transaction: the
+ * phone is waiting for AP-Completed and nothing else can proceed, so one
+ * decrypted DeviceResponse and one parsed document at a time is the whole
+ * demand. Static rather than on that task's stack, which the Zephyr port sizes
+ * at 4 KiB. The plaintext is 16 bytes shorter than the SessionData it came in. */
+static uint8_t s_learn_scratch[STEPUP_SD_MAX];
+static struct ultrawidelock_stepup_doc s_learn_doc;
+
+/* Give the collection buffer back if conn holds it; a no-op otherwise. */
+static void stepup_sd_release(uint16_t conn)
+{
+	if (s_stepup_sd_owner == conn) {
+		s_stepup_sd_owner = STEPUP_SD_FREE;
+		s_stepup_sd_len = 0;
+	}
+}
+
+/* Whether this step-up decides the transaction (the learn path) or only logs a
+ * verdict (the bench one-shot). Without the bench option the learn path is the
+ * only way a step-up starts, and the compiler folds the bench branches away --
+ * which is the point on a part with no console and no flash to spare. */
+static bool stepup_is_learn(bool learn_pending)
+{
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
+	return learn_pending;
+#else
+	(void)learn_pending;
+	return true;
+#endif
+}
+#endif
+
+/* Told each time an endpoint key is learned from an Access Document (see
+ * ultrawidelock/reader.h). Written once at startup, read from the BLE-host task.
+ * Registered by the apps whether or not the step-up phase is built, so it lives
+ * outside that option; without it nothing is ever learned and it stays unread. */
+static void (*s_learned_listener)(uint8_t cred_type, uint16_t cred_index, uint16_t user_index,
+				  const uint8_t cred_pub[ULTRAWIDELOCK_CRED_PUB_LEN]);
 
 /* Where the credential-auth transaction has got to on this connection. Advances
  * strictly forward from PH_IDLE as each command's response arrives; PH_FAILED is
@@ -363,8 +415,13 @@ static struct ultrawidelock_session {
 	struct ultrawidelock_secchan stepup_sc;
 	uint8_t stepup_skr[ULTRAWIDELOCK_SESSION_KEY_LEN];
 	uint8_t stepup_skd[ULTRAWIDELOCK_SESSION_KEY_LEN];
-	uint8_t stepup_sd[2048]; /* collected DeviceResponse SessionData (x5chain headroom) */
-	size_t stepup_sd_len;
+	/* The collected DeviceResponse lives in s_stepup_sd, one buffer for the
+	 * whole reader, owned by conn_handle while this session collects. */
+	/* The learn path: AUTH1 presented a key no anchor matches while an issuer
+	 * key is held, so the document is being fetched to decide the transaction
+	 * rather than to be logged. learn_pub is the key it must vouch for. */
+	bool learn_pending;
+	uint8_t learn_pub[ULTRAWIDELOCK_CRED_PUB_LEN];
 #endif
 
 #if defined(CONFIG_ULTRAWIDELOCK_RSSI_GATE)
@@ -659,7 +716,7 @@ static void start_auth(struct ultrawidelock_session *s)
 	 * UserAuthenticationPolicy stays 0x01 (reference AUTH0Command::Serialize). */
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	s->exp_phase_sent = (s_trust.kp_valid != 0u) ? 0x01u : 0x00u;
-#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
 	if (s_stepup_armed) {
 		s_stepup_armed = false; /* one-shot: consumed by this transaction */
 		s->stepup_active = true;
@@ -1074,6 +1131,33 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 			"presented credential; run `ultrawidelock-trust` to enforce",
 			s->conn_handle);
 	} else {
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+		/*
+		 * Not an anchor -- but the store may hold the issuer that vouches
+		 * for it. Apple Home installs the home's issuer key and one endpoint
+		 * key per phone, and never one for a Watch on the same Apple ID; the
+		 * Nordic reference lock admits such a device by asking for its
+		 * Access Document (step-up, §8.4) and learning the key the issuer
+		 * signed. So: derive the StepUpSK channel off the block while it is
+		 * in scope, and let EXCHANGE go out. The grant waits on the verdict;
+		 * a device that presented no long-term key has nothing to learn.
+		 */
+		uint8_t issuers;
+
+		ultrawidelock_mutex_lock(&s_prov_lock);
+		issuers = s_trust.issuer_count;
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		if (issuers > 0u && r.have_device_pub &&
+		    ultrawidelock_stepup_derive_keys(block, s->stepup_skr, s->stepup_skd) == 0) {
+			ultrawidelock_stepup_channel_init(&s->stepup_sc, s->stepup_skr, s->stepup_skd);
+			s->stepup_active = true;
+			s->learn_pending = true;
+			memcpy(s->learn_pub, cred_pub, ULTRAWIDELOCK_CRED_PUB_LEN);
+			LOG_INF("[conn %u] key not in trust store; %u issuer(s): asking for its "
+				"Access Document",
+				s->conn_handle, (unsigned)issuers);
+		} else {
+#endif
 		LOG_WRN("[conn %u] credential key NOT trusted (%s); rejecting", s->conn_handle,
 			tv == 1 ? "no anchors provisioned" : "not in trust store");
 		/*
@@ -1099,6 +1183,9 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 		notify_access(false);
 		session_terminate(s, "credential is not trusted");
 		return;
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+		}
+#endif
 	}
 	/* Stage this credential's Kpersistent (§8.3.1.13): keyed off this
 	 * session's Kdh, so every standard phase re-agrees it with the phone and the
@@ -1152,6 +1239,13 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 		}
 	}
 	memset(pending_kp, 0, sizeof(pending_kp));
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+	/* Nothing to publish yet: the key is trusted only if its document says
+	 * so, and learn_decide() publishes the grant then. */
+	if (s->learn_pending) {
+		return;
+	}
+#endif
 	/* Commit the externally visible authentication only after the outbound
 	 * transition was accepted. A failed/ambiguous send terminates without
 	 * publishing a fresh presence proof or MRU success. */
@@ -1272,24 +1366,80 @@ static void gated_complete_ap(struct ultrawidelock_session *s)
 }
 
 #if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+/* End a learn-path transaction without the grant. The presented key stays
+ * untrusted; the phone reconnects and, with a document that verifies, gets in. */
+static void learn_reject(struct ultrawidelock_session *s, const char *why)
+{
+	(void)why; /* host log stub compiles the formatted argument away */
+	LOG_WRN("[conn %u] credential key NOT trusted (%s); rejecting", s->conn_handle, why);
+	LOG_WRN("  presented: %02x %02x %02x %02x %02x %02x %02x %02x", s->learn_pub[0],
+		s->learn_pub[1], s->learn_pub[2], s->learn_pub[3], s->learn_pub[4], s->learn_pub[5],
+		s->learn_pub[6], s->learn_pub[7]);
+	s->stepup_active = false;
+	s->learn_pending = false;
+	stepup_sd_release(s->conn_handle);
+	notify_access(false);
+	session_terminate(s, "credential is not trusted");
+}
+
+/* The element the Nordic reference lock asks an Aliro device for, with the
+ * intent to store it (access_manager_impl.cpp kAccessDocumentRequestParams). */
+static const uint8_t k_learn_element[] = {'m', 'a', 't', 't', 'e', 'r', '1'};
+
 /* Build the Access-Document DeviceRequest, seal it into a SessionData message on
  * the StepUpSK channel, and send it in an ENVELOPE APDU (§8.4). On any build/seal
- * failure fall back to completing the AP so the unlock is never blocked. */
+ * failure the bench-armed path falls back to completing the AP so the unlock is
+ * never blocked; the learn path has no unlock to protect and rejects. */
 static void stepup_send_request(struct ultrawidelock_session *s)
 {
 	uint8_t devreq[128], sd[256], apdu[300];
 	size_t drn, sdn, an;
 
-	if (ultrawidelock_stepup_build_device_request(NULL, 0, devreq, sizeof(devreq), &drn) != 0 ||
-	    ultrawidelock_stepup_seal_sessiondata(&s->stepup_sc, devreq, drn, sd, sizeof(sd), &sdn) != 0 ||
-	    ultrawidelock_stepup_build_envelope(sd, sdn, 0, apdu, sizeof(apdu), &an) != 0) {
-		LOG_WRN("[conn %u] step-up: request build failed; completing AP normally",
-			s->conn_handle);
+	if (s_stepup_sd_owner != STEPUP_SD_FREE && s_stepup_sd_owner != s->conn_handle) {
+		if (stepup_is_learn(s->learn_pending)) {
+			learn_reject(s, "document buffer busy");
+			return;
+		}
+		LOG_WRN("[conn %u] step-up: collection buffer held by conn %u; completing AP normally",
+			s->conn_handle, s_stepup_sd_owner);
 		s->stepup_active = false;
 		gated_complete_ap(s);
 		return;
 	}
-	s->stepup_sd_len = 0;
+	s_stepup_sd_owner = s->conn_handle;
+	s_stepup_sd_len = 0;
+
+	int built;
+
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
+	if (!s->learn_pending) {
+		/* The bench one-shot asks for the §14.6 example elements. */
+		built = ultrawidelock_stepup_build_device_request(NULL, 0, devreq, sizeof(devreq), &drn);
+	} else
+#endif
+	{
+		built = ultrawidelock_stepup_build_device_request_ex(k_learn_element,
+								      sizeof(k_learn_element), true,
+								      devreq, sizeof(devreq), &drn) ==
+					ULTRAWIDELOCK_STEPUP_OK
+				? 0
+				: -1;
+	}
+
+	if (built != 0 ||
+	    ultrawidelock_stepup_seal_sessiondata(&s->stepup_sc, devreq, drn, sd, sizeof(sd), &sdn) != 0 ||
+	    ultrawidelock_stepup_build_envelope(sd, sdn, 0, apdu, sizeof(apdu), &an) != 0) {
+		if (stepup_is_learn(s->learn_pending)) {
+			learn_reject(s, "document request not built");
+			return;
+		}
+		LOG_WRN("[conn %u] step-up: request build failed; completing AP normally",
+			s->conn_handle);
+		s->stepup_active = false;
+		stepup_sd_release(s->conn_handle);
+		gated_complete_ap(s);
+		return;
+	}
 	if (send_ap_raw(s->conn_handle, apdu, an) != 0) {
 		session_terminate(s, "step-up request transport result ambiguous");
 		return;
@@ -1299,12 +1449,16 @@ static void stepup_send_request(struct ultrawidelock_session *s)
 		(unsigned)an);
 }
 
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
 /* Hand the collected SessionData response + StepUpSK keys to the background worker
  * so the parse/verify runs off the BLE-host task (never in the ranging arm window).
- * No issuer trust store is provisioned in this reference build, so the verifier
- * selects by x5chain if present and otherwise records "issuer key not found"; the
- * verdict is logged only. A trusted wall clock is not wired (time_valid = 0), so a
- * TimeVerificationRequired document is recorded as time-unverified. */
+ * The bench-armed path (an already-trusted phone asked for its document): no issuer
+ * is handed over, so the verifier selects by x5chain if present and otherwise
+ * records "issuer key not found"; the verdict is logged only. The learn path never
+ * comes here -- it verifies inline against the stored issuers (learn_verify) because
+ * its verdict IS the access decision. A trusted wall clock is not wired
+ * (time_valid = 0), so a TimeVerificationRequired document is recorded as
+ * time-unverified. */
 static void stepup_submit_job(struct ultrawidelock_session *s)
 {
 	struct ultrawidelock_stepup_job job;
@@ -1316,15 +1470,228 @@ static void stepup_submit_job(struct ultrawidelock_session *s)
 	job.time_valid = 0;
 	job.now_epoch = 0;
 	job.conn_handle = s->conn_handle;
-	if (s->stepup_sd_len <= sizeof(job.sd)) {
-		memcpy(job.sd, s->stepup_sd, s->stepup_sd_len);
-		job.sd_len = s->stepup_sd_len;
+	if (s_stepup_sd_len <= sizeof(job.sd)) {
+		memcpy(job.sd, s_stepup_sd, s_stepup_sd_len);
+		job.sd_len = s_stepup_sd_len;
 	}
 	if (ultrawidelock_stepup_worker_submit(&job) != 0) {
 		LOG_WRN("[conn %u] step-up: worker submit failed (verdict skipped)",
 			s->conn_handle);
 	}
 	s->stepup_active = false;
+	stepup_sd_release(s->conn_handle);
+}
+#endif /* CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH */
+
+/* Verify the collected DeviceResponse as the Access Document for s->learn_pub:
+ * decrypt, parse, §7.4 against the PROVISIONED issuers only, then the binding
+ * that makes it an Access Document for THIS key -- the MSO deviceKey must be the
+ * key the device signed AUTH1 with. Returns the slot of the issuer that signed
+ * it and copies its key to issuer_pub, or -1 with *why set. *v carries the last
+ * §7.4 verdict for the log. */
+static int learn_verify(struct ultrawidelock_session *s,
+			uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN], const char **why,
+			struct ultrawidelock_stepup_verdict *v)
+{
+	struct ultrawidelock_stepup_issuer issuers[ULTRAWIDELOCK_ISSUER_MAX];
+	struct ultrawidelock_stepup_verify_ctx ctx;
+	size_t dr_len;
+	uint8_t n;
+	int picked = -1;
+
+	memset(v, 0, sizeof(*v));
+	/* Snapshot: the verify runs unlocked, and the Matter task may be
+	 * installing or clearing an issuer meanwhile. */
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	n = s_trust.issuer_count;
+	for (uint8_t i = 0; i < n && i < ULTRAWIDELOCK_ISSUER_MAX; i++) {
+		memcpy(issuers[i].pub, s_trust.issuer_pub[i], ULTRAWIDELOCK_CRED_PUB_LEN);
+	}
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	if (n == 0u || n > ULTRAWIDELOCK_ISSUER_MAX) {
+		*why = "no issuer key held";
+		return -1;
+	}
+	if (s_stepup_sd_owner != s->conn_handle ||
+	    ultrawidelock_stepup_open_sessiondata(&s->stepup_sc, s_stepup_sd, s_stepup_sd_len,
+						  s_learn_scratch, sizeof(s_learn_scratch),
+						  &dr_len) != 0) {
+		*why = "document did not authenticate";
+		return -1;
+	}
+	if (ultrawidelock_stepup_parse_response(s_learn_scratch, dr_len, &s_learn_doc) != 0) {
+		*why = "document malformed";
+		return -1;
+	}
+	/*
+	 * Only a provisioned issuer may vouch. With an x5chain present the
+	 * verifier takes the signing key from the certificate the document
+	 * brought along, which proves the document is self-consistent and
+	 * nothing about whom the admin trusts. Drop it so selection falls to
+	 * the store.
+	 */
+	s_learn_doc.x5chain = NULL;
+	s_learn_doc.x5chain_len = 0;
+	s_learn_doc.x5_cert = NULL;
+	s_learn_doc.x5_cert_len = 0;
+
+	memset(&ctx, 0, sizeof(ctx));
+	/* No trusted wall clock on either board: §7.2.4 then fails a document
+	 * that requires time verification, and passes one that does not. No
+	 * access-iteration history is kept yet, so step 6 always passes. */
+	ctx.time_valid = 0;
+	ctx.access_iteration = 0;
+	ctx.expected_doctype = ULTRAWIDELOCK_STEPUP_DOCTYPE_ACCESS;
+	ctx.ecdsa_verify = ultrawidelock_ecdsa_p256_verify;
+
+	/* Each provisioned issuer in turn, the document's own kid handed to the
+	 * selector so the signature is the check. The kid (Aliro §7.2.1, a
+	 * SHA-256 of the key) is not consulted: a home holds a handful of
+	 * issuers, and an ECDSA verify per issuer is cheaper than the code that
+	 * would derive and match kids, on a part with no flash to spare. */
+	for (uint8_t i = 0; picked < 0 && i < n; i++) {
+		issuers[i].kid = s_learn_doc.kid;
+		issuers[i].kid_len = s_learn_doc.kid_len;
+		ctx.issuers = &issuers[i];
+		ctx.n_issuers = 1;
+		if (ultrawidelock_stepup_verify(&s_learn_doc, &ctx, v) == 0) {
+			picked = i;
+		}
+	}
+	if (picked < 0) {
+		*why = "no provisioned issuer signed it";
+		return -1;
+	}
+	if (!s_learn_doc.have_device_key ||
+	    memcmp(s_learn_doc.device_key, s->learn_pub, ULTRAWIDELOCK_CRED_PUB_LEN) != 0) {
+		*why = "document vouches for another key";
+		return -1;
+	}
+	memcpy(issuer_pub, issuers[picked].pub, ULTRAWIDELOCK_CRED_PUB_LEN);
+	return picked;
+}
+
+/* Admit s->learn_pub as an evictable endpoint anchor vouched for by issuer_pub,
+ * filed under the issuer's user and the lowest free credential index of its
+ * type, mint its Kpersistent, persist -- and only then publish the grant. Same
+ * rule as the Matter add: a key that cannot be persisted is not trusted.
+ * Returns 0, or -1 when the key is NOT trusted. */
+static int learn_commit(struct ultrawidelock_session *s,
+			const uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN])
+{
+	struct ultrawidelock_reader_identity id;
+	struct ultrawidelock_trust_store cand;
+	uint8_t kp[ULTRAWIDELOCK_KPERSISTENT_LEN], salt[ULTRAWIDELOCK_SALT_MAX];
+	size_t slen;
+	const uint8_t *a5 = s->a5_len ? s->a5_tlv : k_a5_csa_v1;
+	size_t a5n = s->a5_len ? s->a5_len : sizeof(k_a5_csa_v1);
+	uint16_t index = ULTRAWIDELOCK_CRED_INDEX_NONE, user = ULTRAWIDELOCK_CRED_INDEX_NONE;
+	int slot = -1, add = -1, iss, rc = -1;
+
+	/* The Kpersistent this standard phase agreed (§8.3.1.13), as
+	 * on_auth1_response stages it for a key that was already trusted. */
+	bool have_kp = ultrawidelock_salt_build(ULTRAWIDELOCK_SALT_KPERSISTENT, s->txid,
+						s_reader_group_x, s->reader_eph_pub + 1,
+						s_id.reader_id, ULTRAWIDELOCK_IFACE_BLE,
+						ULTRAWIDELOCK_VERSION, s->exp_phase_sent, 0x01u,
+						s->learn_pub + 1, a5, a5n, salt, &slen) == 0 &&
+			ultrawidelock_crypto_derive_key32(s->z, salt, slen, s->device_eph_pub + 1,
+							  kp) == 0;
+
+	store_lock();
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	id = s_id;
+	cand = s_trust;
+	/* Re-find rather than trust the slot the verify used: an admin may have
+	 * cleared the issuer while the document was in flight. */
+	iss = ultrawidelock_prov_issuer_find(&cand, issuer_pub);
+	if (iss >= 0) {
+		add = ultrawidelock_prov_trust_add(&cand, s->learn_pub);
+		slot = add >= 0 ? ultrawidelock_prov_trust_find(&cand, s->learn_pub) : -1;
+	}
+	if (slot >= 0) {
+		if (add == 1) {
+			/* Installed by a SetCredential that landed meanwhile: keep the
+			 * admin's filing, it is what ClearCredential will name. */
+			index = cand.cred_index[slot];
+			user = cand.user_index[slot];
+		} else {
+			index = ultrawidelock_prov_free_cred_index(&cand,
+								   ULTRAWIDELOCK_CRED_TYPE_ALIRO_EVICTABLE);
+			user = cand.issuer_user_index[iss];
+			(void)ultrawidelock_prov_cred_bind_set(&cand, slot,
+							       ULTRAWIDELOCK_CRED_TYPE_ALIRO_EVICTABLE,
+							       index, user);
+			(void)ultrawidelock_prov_anchor_issuer_set(&cand, slot, iss);
+		}
+		if (have_kp) {
+			(void)ultrawidelock_prov_kpersistent_set(&cand, slot, kp);
+		}
+		rc = ultrawidelock_prov_store(&id, &cand);
+	}
+	if (rc == 0) {
+		s_trust = cand;
+		s_fast_mru = (int8_t)slot;
+		memcpy(s_auth_cred_pub, s->learn_pub, ULTRAWIDELOCK_CRED_PUB_LEN);
+		s_have_auth_cred = true;
+		s_auth_generation++;
+	}
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
+	memset(kp, 0, sizeof(kp));
+
+	if (rc != 0) {
+		LOG_ERR("[conn %u] learned key NOT stored (issuer %s, rc=%d)", s->conn_handle,
+			iss < 0 ? "gone" : "held", rc);
+		return -1;
+	}
+	LOG_INF("[conn %u] key LEARNED from its Access Document (issuer %d): type 7 idx %u user %u, "
+		"%u anchor(s)%s",
+		s->conn_handle, iss, (unsigned)index, (unsigned)user, cand.count,
+		have_kp ? ", Kpersistent" : "");
+	if (add == 2) {
+		LOG_WRN("trust store was FULL; dropped an anchor to make room. "
+			"ULTRAWIDELOCK_TRUST_MAX is %u -- raise it if this repeats",
+			ULTRAWIDELOCK_TRUST_MAX);
+	}
+	ultrawidelock_lab_evi("cred.learned", "index", index);
+	if (s_learned_listener != NULL) {
+		s_learned_listener(ULTRAWIDELOCK_CRED_TYPE_ALIRO_EVICTABLE, index, user, s->learn_pub);
+	}
+	return 0;
+}
+
+/* The learn-path verdict, once the DeviceResponse is collected: verify, learn,
+ * then complete the AP -- or reject with the operands in the log. */
+static void learn_decide(struct ultrawidelock_session *s)
+{
+	uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN];
+	struct ultrawidelock_stepup_verdict v;
+	const char *why = NULL;
+	int iss = learn_verify(s, issuer_pub, &why, &v);
+
+	/* The document, decrypted and as collected, and the pointers into it are
+	 * done with. */
+	memset(&s_learn_doc, 0, sizeof(s_learn_doc));
+	memset(s_learn_scratch, 0, sizeof(s_learn_scratch));
+	stepup_sd_release(s->conn_handle);
+
+	if (iss < 0) {
+		LOG_WRN("[conn %u] Access Document verdict: step=%d issuer=%d sig=%d dig=%d type=%d "
+			"time=%d iter=%d el=%u",
+			s->conn_handle, v.reject_step, v.issuer_key_found, v.sig_ok, v.digests_ok,
+			v.doctype_ok, v.time_ok, v.iteration_ok, (unsigned)v.valid_elements);
+		learn_reject(s, why);
+		return;
+	}
+	if (learn_commit(s, issuer_pub) != 0) {
+		learn_reject(s, "learned key not persisted");
+		return;
+	}
+	s->stepup_active = false;
+	s->learn_pending = false;
+	notify_access(true);
+	gated_complete_ap(s);
 }
 
 /* Collect the DeviceResponse across ENVELOPE / GET RESPONSE (ISO7816 61XX
@@ -1334,18 +1701,28 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 	uint16_t sw;
 
 	if (ultrawidelock_apdu_strip_sw(pl, &len, &sw) != 0) {
+		if (stepup_is_learn(s->learn_pending)) {
+			learn_reject(s, "short ENVELOPE response");
+			return;
+		}
 		LOG_WRN("[conn %u] step-up: short ENVELOPE response; completing AP",
 			s->conn_handle);
 		s->stepup_active = false;
+		stepup_sd_release(s->conn_handle);
 		gated_complete_ap(s);
 		return;
 	}
-	if (len > 0 && s->stepup_sd_len + len <= sizeof(s->stepup_sd)) {
-		memcpy(s->stepup_sd + s->stepup_sd_len, pl, len);
-		s->stepup_sd_len += len;
+	if (len > 0 && s_stepup_sd_owner == s->conn_handle &&
+	    s_stepup_sd_len + len <= sizeof(s_stepup_sd)) {
+		memcpy(s_stepup_sd + s_stepup_sd_len, pl, len);
+		s_stepup_sd_len += len;
 	} else if (len > 0) {
+		if (stepup_is_learn(s->learn_pending)) {
+			learn_reject(s, "document too large");
+			return;
+		}
 		LOG_WRN("[conn %u] step-up: DeviceResponse over %u B; truncating", s->conn_handle,
-			(unsigned)sizeof(s->stepup_sd));
+			(unsigned)sizeof(s_stepup_sd));
 	}
 
 	if ((sw & 0xff00u) == 0x6100u) {
@@ -1366,17 +1743,28 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 			"DeviceRequest)",
 			s->conn_handle, sw);
 	}
+	if (stepup_is_learn(s->learn_pending)) {
+		if (sw != 0x9000u || s_stepup_sd_len == 0u) {
+			learn_reject(s, "no document presented");
+			return;
+		}
+		learn_decide(s);
+		return;
+	}
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
 	LOG_INF("[conn %u] step-up: DeviceResponse collected (%u B); completing AP + verifying",
-		s->conn_handle, (unsigned)s->stepup_sd_len);
+		s->conn_handle, (unsigned)s_stepup_sd_len);
 
 	/* Complete the AP + arm ranging FIRST so the verify never delays the unlock,
 	 * then hand the document to the worker. */
 	gated_complete_ap(s);
-	if (s->stepup_sd_len > 0) {
+	if (s_stepup_sd_len > 0) {
 		stepup_submit_job(s);
 	} else {
 		s->stepup_active = false;
+		stepup_sd_release(s->conn_handle);
 	}
+#endif
 }
 #endif /* CONFIG_ULTRAWIDELOCK_CRED_STEPUP */
 
@@ -2198,6 +2586,10 @@ static void on_disconnected(uint16_t conn_handle)
 		 * owner releases its borrowed channel pointer. */
 		memset(s, 0, sizeof(*s));
 	}
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+	/* A document half-collected by the departed peer must not block the next. */
+	stepup_sd_release(conn_handle);
+#endif
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	bool presence_wait = s_presence_wait_disconnect;
 	ultrawidelock_mutex_unlock(&s_prov_lock);
@@ -2464,10 +2856,21 @@ void ultrawidelock_reader_prov_print(void)
 		/* type+cred is the pair a Matter ClearCredential names this anchor
 		 * by -- both halves, because an index is scoped to its type -- and
 		 * user is what ClearUser names it by. A 0 in either means nothing
-		 * can name it. */
-		printf(" kpersistent=%s type=%u cred=%u user=%u\n",
+		 * can name it. issuer is set only for a key learned from an Access
+		 * Document, and names the issuer slot that vouched for it. */
+		printf(" kpersistent=%s type=%u cred=%u user=%u issuer=%d\n",
 		       ((ts.kp_valid >> i) & 1u) ? "yes" : "no", (unsigned)ts.cred_type[i],
-		       (unsigned)ts.cred_index[i], (unsigned)ts.user_index[i]);
+		       (unsigned)ts.cred_index[i], (unsigned)ts.user_index[i],
+		       ultrawidelock_prov_anchor_issuer(&ts, (int)i));
+	}
+	printf("issuers   : %u/%u key(s)\n", ts.issuer_count, ULTRAWIDELOCK_ISSUER_MAX);
+	for (unsigned i = 0; i < ts.issuer_count && i < ULTRAWIDELOCK_ISSUER_MAX; i++) {
+		printf("  [%u] ", i);
+		for (unsigned j = 0; j < ULTRAWIDELOCK_CRED_PUB_LEN; j++) {
+			printf("%02x", ts.issuer_pub[i][j]);
+		}
+		printf(" cred=%u user=%u\n", (unsigned)ts.issuer_cred_index[i],
+		       (unsigned)ts.issuer_user_index[i]);
 	}
 	printf("last cred : ");
 	if (have) {
@@ -2651,25 +3054,36 @@ int ultrawidelock_reader_trust_clear(void)
 
 /* ---- Step-up (Access Document) bench control --------------------------- */
 
+_Static_assert(ULTRAWIDELOCK_READER_ISSUER_KEYS_MAX == ULTRAWIDELOCK_ISSUER_MAX,
+	       "the issuer cap the public header spells out must be the store's");
+
+// Register the learned-credential listener (see ultrawidelock/reader.h).
+void ultrawidelock_reader_set_credential_learned_listener(
+	void (*cb)(uint8_t cred_type, uint16_t cred_index, uint16_t user_index,
+		   const uint8_t cred_pub[ULTRAWIDELOCK_CRED_PUB_LEN]))
+{
+	s_learned_listener = cb;
+}
+
 // Arm a one-shot Access-Document request (see ultrawidelock_reader.h). No-op with a note
-// when the reader was built without CONFIG_ULTRAWIDELOCK_CRED_STEPUP.
+// when the reader was built without CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH.
 void ultrawidelock_reader_stepup_arm(void)
 {
-#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
 	load_provisioning(); /* ensures s_prov_lock exists */
 	ultrawidelock_mutex_lock(&s_prov_lock);
 	s_stepup_armed = true;
 	ultrawidelock_mutex_unlock(&s_prov_lock);
 	LOG_INF("step-up armed: the next transaction will request an Access Document");
 #else
-	LOG_WRN("step-up not built (CONFIG_ULTRAWIDELOCK_CRED_STEPUP=n)");
+	LOG_WRN("bench step-up not built (CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH=n)");
 #endif
 }
 
 // Print the armed state and the most recent verification verdict (see ultrawidelock_reader.h).
 void ultrawidelock_reader_stepup_status(void)
 {
-#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
 	bool armed;
 
 	load_provisioning();
@@ -2692,7 +3106,7 @@ void ultrawidelock_reader_stepup_status(void)
 		printf("last verdict: (none yet)\n");
 	}
 #else
-	printf("step-up   : not built (CONFIG_ULTRAWIDELOCK_CRED_STEPUP=n)\n");
+	printf("step-up   : bench one-shot not built (CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH=n)\n");
 #endif
 }
 
@@ -2865,6 +3279,91 @@ int ultrawidelock_reader_provision_add_trust(const uint8_t cred_pub[ULTRAWIDELOC
 	return 0;
 }
 
+// Add a Matter-provisioned credential issuer public key (SetCredential type 6) and persist it;
+// see ultrawidelock/reader.h. Same commit order as add_trust: written first, adopted second, so a
+// key the store could not keep is not one the reader verifies documents against.
+int ultrawidelock_reader_provision_add_issuer(const uint8_t pub[ULTRAWIDELOCK_CRED_PUB_LEN],
+					      uint16_t cred_index, uint16_t user_index)
+{
+	load_provisioning();
+
+	struct ultrawidelock_reader_identity id;
+	struct ultrawidelock_trust_store cand;
+
+	store_lock();
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	id = s_id;
+	cand = s_trust;
+
+	int add = ultrawidelock_prov_issuer_add(&cand, pub, cred_index, user_index);
+
+	if (add < 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
+		LOG_ERR("issuer key REFUSED: %s", pub[0] != 0x04u ? "bad point" : "store full");
+		return -1;
+	}
+	if (add == 1 && memcmp(&cand, &s_trust, sizeof(cand)) == 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
+		return 1; /* already held under these indices; nothing to persist */
+	}
+
+	int store_rc = ultrawidelock_prov_store(&id, &cand);
+
+	if (store_rc != 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		store_unlock();
+		return store_rc; /* not committed; s_trust unchanged */
+	}
+	s_trust = cand;
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
+	LOG_INF("Matter-provisioned issuer key %s (%u total)", add == 1 ? "re-indexed" : "stored",
+		cand.issuer_count);
+	return add;
+}
+
+// Revoke the issuer a Matter admin installed as type-6 credential cred_index, together with
+// every anchor the reader learned from a document it signed. Same fail-closed order as
+// remove_trust: applied in RAM first, persisted second, the write retried later if it fails.
+int ultrawidelock_reader_provision_remove_issuer(uint16_t cred_index)
+{
+	load_provisioning();
+
+	struct ultrawidelock_reader_identity id;
+	struct ultrawidelock_trust_store cand;
+	int idx, dropped = 0;
+
+	store_lock();
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	idx = ultrawidelock_prov_issuer_find_index(&s_trust, cred_index);
+	if (idx >= 0) {
+		dropped = ultrawidelock_prov_issuer_remove_at(&s_trust, idx);
+		id = s_id;
+		cand = s_trust;
+		s_fast_mru = -1;
+	}
+	if (idx < 0) {
+		ultrawidelock_mutex_unlock(&s_prov_lock);
+		int pending = flush_pending_store_locked();
+		store_unlock();
+
+		return pending != 0 ? pending : 1;
+	}
+
+	int rc = persist_removal_locked(&id, &cand);
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	store_unlock();
+
+	/* NULL: the learned anchors went with it, so both latches go regardless. */
+	revoke_aftermath(NULL);
+	(void)dropped; /* host log stub compiles the formatted argument away */
+	LOG_INF("issuer index %u REVOKED, %d learned anchor(s) with it (%u issuers, %u anchors left)",
+		(unsigned int)cred_index, dropped, cand.issuer_count, cand.count);
+	return rc;
+}
+
 // Revoke the trust anchor a Matter admin installed as (cred_type, cred_index). Both halves
 // are matched, because a Matter credential index is scoped to its type.
 // Returns 1 when no anchor carries that pair (a removal that already happened, or a
@@ -2933,7 +3432,16 @@ int ultrawidelock_reader_provision_remove_type(uint8_t cred_type)
 
 	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
-	/* Downwards, because removing slot i shifts every later slot into it. */
+	/* Issuers first: each takes the anchors it vouched for with it, which are
+	 * counted as revoked too. Downwards, because removing slot i shifts every
+	 * later slot into it. */
+	if (cred_type == 0u || cred_type == ULTRAWIDELOCK_CRED_TYPE_ALIRO_ISSUER) {
+		for (int i = (int)s_trust.issuer_count - 1; i >= 0; i--) {
+			int dropped = ultrawidelock_prov_issuer_remove_at(&s_trust, i);
+
+			removed += dropped > 0 ? dropped + 1 : 1;
+		}
+	}
 	for (int i = (int)s_trust.count - 1; i >= 0; i--) {
 		if (cred_type == 0u || s_trust.cred_type[i] == cred_type) {
 			(void)ultrawidelock_prov_trust_remove_at(&s_trust, i);
@@ -2979,7 +3487,17 @@ int ultrawidelock_reader_provision_remove_user(uint16_t user_index)
 
 	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
-	/* Downwards, because removing slot i shifts every later slot into it. */
+	/* The user's issuer keys go first, each taking the anchors learned under
+	 * it; then whatever the user held directly. Downwards, because removing
+	 * slot i shifts every later slot into it. */
+	for (int i = (int)s_trust.issuer_count - 1; i >= 0; i--) {
+		if (user_index == ULTRAWIDELOCK_USER_INDEX_ALL ||
+		    s_trust.issuer_user_index[i] == user_index) {
+			int dropped = ultrawidelock_prov_issuer_remove_at(&s_trust, i);
+
+			removed += dropped > 0 ? dropped + 1 : 1;
+		}
+	}
 	for (int i = (int)s_trust.count - 1; i >= 0; i--) {
 		if (user_index == ULTRAWIDELOCK_USER_INDEX_ALL || s_trust.user_index[i] == user_index) {
 			(void)ultrawidelock_prov_trust_remove_at(&s_trust, i);

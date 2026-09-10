@@ -1012,6 +1012,15 @@ int mfk_remove_trust_calls;
 uint8_t mfk_remove_trust_type;
 uint16_t mfk_remove_trust_index;
 int mfk_remove_trust_rc;
+int mfk_add_issuer_calls;
+uint8_t mfk_add_issuer_key[65];
+uint16_t mfk_add_issuer_index;
+uint16_t mfk_add_issuer_user;
+int mfk_add_issuer_rc;
+int mfk_remove_issuer_calls;
+uint16_t mfk_remove_issuer_index;
+int mfk_remove_issuer_rc;
+void (*mfk_learned_listener)(uint8_t, uint16_t, uint16_t, const uint8_t *);
 int mfk_remove_user_calls;
 uint16_t mfk_remove_user_index;
 int mfk_remove_user_rc;
@@ -1127,6 +1136,30 @@ int ultrawidelock_reader_provision_remove_user(uint16_t user_index)
 	mfk_remove_user_calls++;
 	mfk_remove_user_index = user_index;
 	return mfk_remove_user_rc;
+}
+
+int ultrawidelock_reader_provision_add_issuer(const uint8_t pub[65], uint16_t cred_index,
+					      uint16_t user_index)
+{
+	mfk_add_issuer_calls++;
+	mfk_add_issuer_index = cred_index;
+	mfk_add_issuer_user = user_index;
+	memcpy(mfk_add_issuer_key, pub, 65);
+	return mfk_add_issuer_rc;
+}
+
+int ultrawidelock_reader_provision_remove_issuer(uint16_t cred_index)
+{
+	mfk_remove_issuer_calls++;
+	mfk_remove_issuer_index = cred_index;
+	return mfk_remove_issuer_rc;
+}
+
+void ultrawidelock_reader_set_credential_learned_listener(
+	void (*cb)(uint8_t cred_type, uint16_t cred_index, uint16_t user_index,
+		   const uint8_t cred_pub[65]))
+{
+	mfk_learned_listener = cb;
 }
 
 int ultrawidelock_reader_provision_clear(void)
@@ -1428,6 +1461,11 @@ void mfk_reset(void)
 	/* The revocation half, so a section that forced a failing removal cannot
 	 * leave the next one refusing for a reason it never set. */
 	mfk_remove_trust_calls = 0;
+	mfk_add_issuer_calls = 0;
+	mfk_add_issuer_rc = 0;
+	mfk_remove_issuer_calls = 0;
+	mfk_remove_issuer_rc = 0;
+	mfk_learned_listener = NULL;
 	mfk_remove_trust_type = 0;
 	mfk_remove_trust_index = 0;
 	mfk_remove_trust_rc = 0;

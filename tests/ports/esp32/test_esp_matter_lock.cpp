@@ -58,6 +58,7 @@
 #include "app_shell.h"
 #include "door_lock_manager.h"
 #include "ultrawidelock_reader_delegate.h"
+#include <ultrawidelock/reader.h> /* ULTRAWIDELOCK_READER_ISSUER_KEYS_MAX */
 #include "lock_led.h"
 
 extern uint16_t door_lock_endpoint_id;
@@ -215,7 +216,11 @@ static void section_delegate(void)
 		    CHIP_ERROR_INVALID_ARGUMENT);
 
 	okc("advertising version is 0", d.GetAliroBLEAdvertisingVersion() == 0);
-	okc("issuer keys supported", d.GetNumberOfAliroCredentialIssuerKeysSupported() == 10);
+	/* The issuer count is the reader's issuer store, which refuses when full,
+	 * so the attribute must not promise more than it holds. */
+	okc("issuer keys supported",
+	    d.GetNumberOfAliroCredentialIssuerKeysSupported() == ULTRAWIDELOCK_READER_ISSUER_KEYS_MAX &&
+		    ULTRAWIDELOCK_READER_ISSUER_KEYS_MAX == 5);
 	okc("endpoint keys supported", d.GetNumberOfAliroEndpointKeysSupported() == 10);
 
 	uint8_t sk[32], vkey[65], gidv[16], grkv[16];
@@ -744,6 +749,31 @@ static void section_callbacks(void)
 					       chip::ByteSpan(key65)) &&
 		    mfk_add_trust_calls == 3);
 	mfk_add_trust_rc = 0;
+	/*
+	 * The issuer key (type 6) is not an anchor but it is kept: it is what a
+	 * device the hub never sends a SetCredential for (an Apple Watch on the
+	 * owner's Apple ID) proves its Access Document against. So it goes to the
+	 * reader's issuer store, never to the trust store, under its own index.
+	 */
+	okc("set-credential mirrors an issuer key into the issuer store",
+	    emberAfPluginDoorLockSetCredential(1, 3, 1, 1, DlCredentialStatus::kOccupied,
+					       CredentialTypeEnum::kAliroCredentialIssuerKey,
+					       chip::ByteSpan(key65)) &&
+		    mfk_add_issuer_calls == 1 && mfk_add_issuer_index == 3 &&
+		    memcmp(mfk_add_issuer_key, key65, 65) == 0 && mfk_add_trust_calls == 3);
+	mfk_add_issuer_rc = -1; /* store full: the reader cannot verify under this issuer */
+	okc("set-credential fails when the issuer store refused the key",
+	    !emberAfPluginDoorLockSetCredential(1, 4, 1, 1, DlCredentialStatus::kOccupied,
+						CredentialTypeEnum::kAliroCredentialIssuerKey,
+						chip::ByteSpan(key65)) &&
+		    mfk_add_issuer_calls == 2);
+	mfk_add_issuer_rc = 0;
+	okc("set-credential revokes a cleared issuer slot, not an anchor",
+	    emberAfPluginDoorLockSetCredential(1, 3, 1, 1, DlCredentialStatus::kAvailable,
+					       CredentialTypeEnum::kAliroCredentialIssuerKey,
+					       chip::ByteSpan()) &&
+		    mfk_remove_issuer_calls == 1 && mfk_remove_issuer_index == 3 &&
+		    mfk_remove_trust_calls == 3);
 	/* Index 0 is invalid for a PIN, so the lock's own store refuses before the
 	 * ultrawidelock mirror is ever reached: the call count must not move. */
 	okc("set-credential propagates a failed store",

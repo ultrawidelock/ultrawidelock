@@ -81,15 +81,16 @@ void test_ultrawidelock_prov(void)
 	size_t n = 0;
 	T_EQ("serialize", ultrawidelock_prov_serialize(&id, &ts, blob, sizeof(blob), &n), 0);
 
-	/* Wire header is locked: magic "APRV", version 4, flags 0 (not dev). */
+	/* Wire header is locked: magic "APRV", version 5, flags 0 (not dev). */
 	T_OK("hdr.magic", n >= 6 && memcmp(blob, "APRV", 4) == 0);
-	T_EQ("hdr.version", blob[4], 4);
+	T_EQ("hdr.version", blob[4], 5);
 	T_EQ("hdr.flags_notdev", blob[5], 0);
-	/* Exact length for 2 anchors, both with a kpersistent row and a 5-byte
-	 * (type, credential index, user index) binding. */
+	/* Exact length for 2 anchors, both with a kpersistent row, a 5-byte
+	 * (type, credential index, user index) binding and a 1-byte issuer
+	 * binding, then the issuer count (0: no issuer installed here). */
 	size_t want = 6u + ULTRAWIDELOCK_READER_ID_LEN + ULTRAWIDELOCK_READER_PRIV_LEN +
 		      ULTRAWIDELOCK_GRK_LEN + 1u + 2u * ULTRAWIDELOCK_CRED_PUB_LEN + 1u +
-		      2u * ULTRAWIDELOCK_KPERSISTENT_LEN + 2u * 5u;
+		      2u * ULTRAWIDELOCK_KPERSISTENT_LEN + 2u * 5u + 2u * 1u + 1u;
 	T_EQ("hdr.length", n, want);
 
 	struct ultrawidelock_reader_identity id2;
