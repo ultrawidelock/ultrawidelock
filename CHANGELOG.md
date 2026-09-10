@@ -10,6 +10,24 @@ tag was cut.
 
 ## [Unreleased]
 
+### ESP32-S3: pairing a fresh lock with Apple Home
+
+- **"Unable to add Accessory" on a freshly erased board.** Home commissions a
+  lock twice back to back (its phone's fabric, then its hub's, half a second
+  apart), and the lock started its credential reader the moment the first
+  round completed: from ~80 ms later every Wi-Fi send failed with lwIP
+  `ERR_MEM` (`SendMessage() ... failed: 3000001`), the second round's reports
+  never left the board, and Home gave up after its retries (measured
+  2026-09-10, ESP-IDF v5.5.4). It regressed with the Watch change below:
+  `88df5c7f`, the merge just before it, pairs cleanly with the very same
+  reader start. The reader now waits until the commissioner has been quiet
+  for 20 s: no further CommissioningComplete, no commissioning window open,
+  no fail-safe armed. A commissioned lock rebooting starts the reader at
+  once, as before.
+- **`status` reports internal RAM:** free now, largest single block, and the
+  least ever free since boot, so the headroom commissioning leaves is a number
+  rather than a guess.
+
 ### The Watch gets in without `trust`
 
 - **A second device on the owner's Apple ID is admitted through its Access

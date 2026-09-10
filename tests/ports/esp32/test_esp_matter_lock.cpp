@@ -905,11 +905,28 @@ static void section_events(void)
 
 	ev.Type = chip::DeviceLayer::DeviceEventType::kCommissioningComplete;
 	cb(&ev, 0);
-	okc("commissioning-complete starts the reader task once",
+	okc("commissioning-complete arms the quiet wait, not the reader",
+	    mfk_task_count == 0 && mfk_timer_pending == 1 && mfk_timer_last_ms == 20000);
+	cb(&ev, 0);
+	okc("a second round restarts the same wait",
+	    mfk_task_count == 0 && mfk_timer_starts == 2 && mfk_timer_pending == 1);
+	mfk_cw_is_open = 1;
+	mfk_timer_fire();
+	okc("wait ends with a window open: deferred again",
+	    mfk_task_count == 0 && mfk_timer_pending == 1);
+	mfk_cw_is_open = 0;
+	mfk_failsafe_armed = 1;
+	mfk_timer_fire();
+	okc("wait ends with the fail-safe armed: deferred again",
+	    mfk_task_count == 0 && mfk_timer_pending == 1);
+	mfk_failsafe_armed = 0;
+	mfk_timer_fire();
+	okc("quiet commissioner: the reader task starts once",
 	    mfk_task_count == 1 && strcmp(mfk_tasks[0].name, "ultrawidelock_reader") == 0 &&
 		    mfk_tasks[0].stack == 12288 && mfk_tasks[0].prio == 5 &&
-		    ultrawidelock_reader_task_handle != nullptr);
+		    ultrawidelock_reader_task_handle != nullptr && mfk_timer_pending == 0);
 	cb(&ev, 0);
+	mfk_timer_fire();
 	okc("reader task start is idempotent", mfk_task_count == 1);
 
 	/* the informational events must all dispatch without effect */

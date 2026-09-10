@@ -233,7 +233,22 @@ struct Seconds16 {
 	uint16_t value;
 	constexpr explicit Seconds16(unsigned v) : value((uint16_t)v) {}
 };
+struct Milliseconds32 {
+	uint32_t value;
+	constexpr explicit Milliseconds32(unsigned v) : value((uint32_t)v) {}
+};
 } // namespace Clock
+
+/* One timer slot. app_main arms a single timer (the reader's wait for the
+ * commissioner to go quiet); starting it again replaces the pending one, as
+ * the real layer does for the same callback. mfk_timer_fire() is the tick. */
+class Layer;
+typedef void (*TimerCompleteCallback)(Layer *layer, void *appState);
+class Layer {
+public:
+	CHIP_ERROR StartTimer(Clock::Milliseconds32 delay, TimerCompleteCallback cb, void *appState);
+	void CancelTimer(TimerCompleteCallback cb, void *appState);
+};
 } // namespace System
 
 enum class CommissioningWindowAdvertisement { kAllSupported = 0, kDnssdOnly = 1 };
@@ -526,6 +541,7 @@ public:
 };
 
 PlatformManager &PlatformMgr();
+System::Layer &SystemLayer();
 
 namespace Internal {
 
@@ -577,11 +593,19 @@ public:
 	void CloseCommissioningWindow();
 };
 
+namespace app {
+class FailSafeContext {
+public:
+	bool IsFailSafeArmed() const;
+};
+} // namespace app
+
 class Server {
 public:
 	static Server &GetInstance();
 	FabricTable &GetFabricTable();
 	CommissioningWindowManager &GetCommissioningWindowManager();
+	app::FailSafeContext &GetFailSafeContext();
 };
 
 } // namespace chip
@@ -682,6 +706,14 @@ extern uint32_t mfk_cw_open_rc; /* raw CHIP error code returned */
 extern uint16_t mfk_cw_last_timeout;
 extern int mfk_cw_last_adv;
 extern int mfk_cw_close_calls;
+extern int mfk_failsafe_armed;
+
+/* System layer timer (one slot). */
+extern int mfk_timer_pending;
+extern int mfk_timer_starts;
+extern uint32_t mfk_timer_last_ms;
+extern uint32_t mfk_timer_start_rc; /* raw CHIP error code: non-zero refuses StartTimer */
+void mfk_timer_fire(void);
 
 /* Button recorder. mfk_btn_fire_long_press() invokes whatever app_main hung on
  * BUTTON_LONG_PRESS_START, which is how a test presses the board's button. */
