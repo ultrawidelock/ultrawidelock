@@ -22,8 +22,11 @@ extern "C" {
 /* Maximum wait for each credential handshake phase that is awaiting a peer
  * response. The periodic status tick expires at the exact boundary. */
 #define ULTRAWIDELOCK_READER_PHASE_TIMEOUT_MS 5000u
-/* Hard cap for a connected credential link, including ESTABLISHED/ranging.
- * Prevents a peer from monopolizing a single-connection controller forever. */
+/* Cap for a connected credential link. Up to ESTABLISHED it is a hard age cap
+ * on the handshake; from ESTABLISHED on it is an IDLE cap, refreshed by every
+ * peer message and by every accepted range, so a peer that has gone quiet on
+ * both radios for this long is dropped and one that is ranging never is.
+ * Prevents a dead peer from monopolizing a single-connection controller. */
 #define ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS 30000u
 
 /** Bring up the credential reader (starts the BLE transport + session layer).

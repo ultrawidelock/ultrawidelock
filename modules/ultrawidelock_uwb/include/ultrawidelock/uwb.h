@@ -130,6 +130,12 @@ uint32_t ultrawidelock_uwb_session_id(void);
 /** Monotonic accepted-range epoch for post-challenge freshness checkpoints. */
 uint32_t ultrawidelock_uwb_range_generation(void);
 
+/** Counts successful ultrawidelock_uwb_start_cred() calls. A peer that suspends
+ *  ranging and starts it again inside one BLE session (the Watch does, once
+ *  it has walked away and come back) keeps its session id, so this is the
+ *  only epoch that says "the peer began ranging again". */
+uint32_t ultrawidelock_uwb_start_generation(void);
+
 /** Trusted distance only when its accepted-range epoch is newer than @p after.
  *  This is the demand-driven presence seam: an old latch can never satisfy a
  *  challenge merely because it remains recent in wall-clock terms. */

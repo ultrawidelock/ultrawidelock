@@ -53,6 +53,12 @@ int ultrawidelock_ranging_feed(uint16_t conn_handle, const uint8_t *data, size_t
  *  is active for @conn_handle. */
 void ultrawidelock_ranging_stop(uint16_t conn_handle);
 
+/** Age of the newest accepted range, trusted or not. Returns false when no
+ *  range has been latched since the last ultrawidelock_ranging_start(). The
+ *  reader's session deadline asks this: a peer that is ranging is not idle,
+ *  however long it has been connected. */
+bool ultrawidelock_ranging_last_range_age_ms(int64_t *age_ms_out);
+
 #ifdef __cplusplus
 }
 #endif

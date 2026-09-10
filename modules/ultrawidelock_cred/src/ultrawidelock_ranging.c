@@ -384,3 +384,10 @@ void ultrawidelock_ranging_stop(uint16_t conn_handle)
 	LOG_INF("[conn %u] tearing down UWB ranging session", conn_handle);
 	ultrawidelock_uwb_session_destroy(sess);
 }
+
+bool ultrawidelock_ranging_last_range_age_ms(int64_t *age_ms_out)
+{
+	int32_t cm;
+
+	return ultrawidelock_uwb_last_range_age_cm(&cm, age_ms_out);
+}

@@ -1561,6 +1561,36 @@ void ultrawidelock_reader_notify_unlock(bool unsecured)
 // an argument keeps the deadline testable without a fake clock. No-op unless a replay is armed.
 static _Atomic uint32_t s_reader_tick_now;
 
+/*
+ * The connected cap, once ESTABLISHED, measures idleness, not age.
+ *
+ * MEASURED 2026-09-10, DWM3001CDK + Apple Watch: unlock at +3 s, walk away,
+ * relock at +10 s, the Watch suspends ranging at +16 s and restarts it at
+ * +21 s on the same BLE link, ranges at 0 cm from +24 s -- and at +30 s the
+ * reader disconnected it for "session deadline expired", mid-approach. The
+ * Watch was back within a second, which is the other half of the point: the
+ * cap never freed the controller, it only cost a walk-up. A peer that is
+ * ranging is using the link; only one that has gone quiet on BOTH radios for
+ * the whole window is holding it. BLE messages refresh the deadline in
+ * on_data; this refreshes it for the UWB side, from the age of the newest
+ * accepted range.
+ */
+static void session_idle_extend(struct ultrawidelock_session *s, uint32_t now_ms)
+{
+	int64_t age_ms;
+
+	if (s->phase != PH_ESTABLISHED || !s->overall_deadline_armed ||
+	    !ultrawidelock_ranging_last_range_age_ms(&age_ms) || age_ms < 0 ||
+	    age_ms >= (int64_t)ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS) {
+		return;
+	}
+	uint32_t until = now_ms + (ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS - (uint32_t)age_ms);
+
+	if ((int32_t)(until - s->overall_deadline_ms) > 0) {
+		s->overall_deadline_ms = until;
+	}
+}
+
 static void reader_tick_on_host(void)
 {
 	uint32_t now_ms = atomic_load_explicit(&s_reader_tick_now, memory_order_relaxed);
@@ -1573,6 +1603,7 @@ static void reader_tick_on_host(void)
 		if (!s->active) {
 			continue;
 		}
+		session_idle_extend(s, now_ms);
 		if (s->phase_deadline_armed && (int32_t)(now_ms - s->phase_deadline_ms) >= 0) {
 			session_terminate(s, "credential phase deadline expired");
 		} else if (s->overall_deadline_armed &&
@@ -2191,8 +2222,15 @@ static void on_data(uint16_t conn_handle, const uint8_t *data, uint16_t len)
 		return;
 	}
 	uint32_t now_ms = (uint32_t)ultrawidelock_reader_monotonic_ms();
-	if ((s->phase_deadline_armed && (int32_t)(now_ms - s->phase_deadline_ms) >= 0) ||
-	    (s->overall_deadline_armed && (int32_t)(now_ms - s->overall_deadline_ms) >= 0)) {
+	if (s->phase == PH_ESTABLISHED) {
+		/* Established, the cap is an IDLE cap: a peer that is still talking
+		 * (ranging control, time sync, a restart) is not monopolizing the
+		 * link, it is using it. See session_idle_extend(). */
+		if (s->overall_deadline_armed) {
+			s->overall_deadline_ms = now_ms + ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS;
+		}
+	} else if ((s->phase_deadline_armed && (int32_t)(now_ms - s->phase_deadline_ms) >= 0) ||
+		   (s->overall_deadline_armed && (int32_t)(now_ms - s->overall_deadline_ms) >= 0)) {
 		session_terminate(s, "credential phase deadline expired before receive");
 		return;
 	}

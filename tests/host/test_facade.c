@@ -65,8 +65,11 @@ void test_facade(void)
 	c.ursk = ursk;
 	c.ranging_config = rc;
 	c.rc_len = sizeof(rc);
+	uint32_t start_gen = ultrawidelock_uwb_start_generation();
+
 	T_EQ("start.rc", ultrawidelock_uwb_start_cred(&c), 0);
 	T_OK("shim.active.rc", ccc_shim_active());
+	T_EQ("start.generation.advanced", ultrawidelock_uwb_start_generation(), start_gen + 1u);
 
 	t_group("start_ultrawidelock URSK fallback (no ranging_config, slot_per_round 0)");
 	c.ranging_config = NULL;

@@ -56,6 +56,8 @@ int ultrawidelock_uwb_bind_ursk(const uint8_t *ursk, size_t ursk_len)
  * @return 0 on success, -EINVAL if config is NULL or ursk is NULL, -EIO if radio initialization
  * fails.
  */
+static uint32_t g_start_gen;
+
 int ultrawidelock_uwb_start_cred(const struct ultrawidelock_uwb_cred_cfg *c)
 {
 	int rc;
@@ -105,8 +107,10 @@ int ultrawidelock_uwb_start_cred(const struct ultrawidelock_uwb_cred_cfg *c)
 		ccc_shim_unbind();
 		fira_session_set_provisioned_ursk(NULL);
 		fira_session_set_id(0u);
+		return rc;
 	}
-	return rc;
+	g_start_gen++;
+	return 0;
 }
 
 /**
@@ -217,6 +221,11 @@ bool ultrawidelock_uwb_trusted_range_block_cm(int32_t *cm_out, uint32_t *block_o
 uint32_t ultrawidelock_uwb_session_id(void)
 {
 	return fira_session_id();
+}
+
+uint32_t ultrawidelock_uwb_start_generation(void)
+{
+	return g_start_gen;
 }
 
 uint32_t ultrawidelock_uwb_range_generation(void)

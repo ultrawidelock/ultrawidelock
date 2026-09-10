@@ -35,6 +35,27 @@ tag was cut.
   on, printed off the critical path, no `uwbdiag` needed. SDK:
   `ccc_shim_rx_stats_get()`.
 
+### Apple Watch, unlock on approach
+
+Two faults, both measured on a DWM3001CDK on 2026-09-10 once the Watch's
+key was trusted, both in the walk-away-and-come-back case that the Watch's
+own ranging policy produces (it suspends ranging once far and restarts it,
+same BLE session, once its wearer is back).
+
+- **The reader dropped a live, ranging session at 30 s.** The connected cap
+  was a hard age cap. The Watch's second approach in a session was ranging
+  at 0 cm when the reader disconnected it for "session deadline expired",
+  and it was back within a second, so the cap freed nothing. From
+  ESTABLISHED on the cap is now an idle cap: every peer message and every
+  accepted range refresh it. A peer quiet on both radios for 30 s is still
+  dropped. SDK: `ultrawidelock_ranging_last_range_age_ms()`.
+- **CDK: the second approach never unlocked.** A departure relock disarms
+  the trajectory gate, which re-arms only on a range at or past
+  `approach_cm`; the Watch restarts ranging already inside it (61 cm,
+  130 cm measured). A ranging restart is now the same approach evidence a
+  new session is, and arms the gate the same way. SDK:
+  `ultrawidelock_uwb_start_generation()`.
+
 ### DWM3001CDK
 
 - **`trust` and `prov` can be typed at the RTT terminal.** The Matter image

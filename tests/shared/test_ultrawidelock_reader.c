@@ -307,6 +307,18 @@ void ultrawidelock_ranging_stop(uint16_t conn_handle)
 	s_rng_stops++;
 }
 
+/* Age of the newest range, or -1 for "none since start" (the default). */
+static int64_t s_rng_age_ms = -1;
+
+bool ultrawidelock_ranging_last_range_age_ms(int64_t *age_ms_out)
+{
+	if (s_rng_age_ms < 0) {
+		return false;
+	}
+	*age_ms_out = s_rng_age_ms;
+	return true;
+}
+
 /* ---- ultrawidelock_prov NVS double (RAM blob via the real serializer) ------------ */
 
 static uint8_t s_nvs[ULTRAWIDELOCK_PROV_BLOB_MAX];
@@ -1966,6 +1978,68 @@ int main(void)
 		(void)drain_reader_tick();
 		okc("t.overall_wrap_exact", s_disconnects == disconnects + 1);
 		s_cfg.cb.on_disconnected(68);
+		s_fake_now_ms = 0;
+
+		/* ESTABLISHED, the cap is an IDLE cap. A range 5 s old at the
+		 * deadline is 25 s of credit; the Watch that restarted ranging on
+		 * the same link and stood at 0 cm was cut off at exactly this
+		 * boundary before. */
+		tx_reset();
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(69);
+		ph_initiate(&p, 69, 1);
+		okc("t.idle.auth0", ph_take_auth0(&p) == 0);
+		okc("t.idle.fast", ph_auth0_resp_fast(&p, 69, 0xD6) == 0);
+		okc("t.idle.exchange", ph_exchange_resp(&p, 69) == 0);
+		okc("t.idle.ap", ph_take_ap_completed(&p) == 0);
+		uint32_t idle_deadline = s_fake_now_ms + ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS;
+
+		s_rng_age_ms = 5000;
+		ultrawidelock_reader_status_tick(idle_deadline);
+		(void)drain_reader_tick();
+		okc("t.idle.ranging_extends", s_disconnects == disconnects);
+		s_rng_age_ms = -1;
+		ultrawidelock_reader_status_tick(idle_deadline + 24999u);
+		(void)drain_reader_tick();
+		okc("t.idle.credit_held", s_disconnects == disconnects);
+		ultrawidelock_reader_status_tick(idle_deadline + 25000u);
+		(void)drain_reader_tick();
+		okc("t.idle.credit_spent", s_disconnects == disconnects + 1);
+		s_cfg.cb.on_disconnected(69);
+
+		/* And a peer message refreshes it outright: one ranging SDU at
+		 * the last tick before the deadline buys a whole new window. */
+		tx_reset();
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(70);
+		ph_initiate(&p, 70, 1);
+		okc("t.idle.msg.auth0", ph_take_auth0(&p) == 0);
+		okc("t.idle.msg.fast", ph_auth0_resp_fast(&p, 70, 0xD7) == 0);
+		okc("t.idle.msg.exchange", ph_exchange_resp(&p, 70) == 0);
+		okc("t.idle.msg.ap", ph_take_ap_completed(&p) == 0);
+		idle_deadline = s_fake_now_ms + ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS;
+		{
+			uint8_t plain[6] = {0x01, 0x01, 0x00, 0x02, 0xAB, 0xCD};
+			uint8_t wire[64];
+			size_t wl;
+
+			s_fake_now_ms = idle_deadline - 1u;
+			wl = ph_seal_ble(&p, plain, sizeof(plain), wire);
+			okc("t.idle.msg.sealed", wl > 0);
+			s_cfg.cb.on_data(70, wire, (uint16_t)wl);
+		}
+		ultrawidelock_reader_status_tick(idle_deadline);
+		(void)drain_reader_tick();
+		okc("t.idle.msg_refreshed", s_disconnects == disconnects);
+		ultrawidelock_reader_status_tick(idle_deadline - 1u +
+						 ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS - 1u);
+		(void)drain_reader_tick();
+		okc("t.idle.msg_window_held", s_disconnects == disconnects);
+		ultrawidelock_reader_status_tick(idle_deadline - 1u +
+						 ULTRAWIDELOCK_READER_SESSION_TIMEOUT_MS);
+		(void)drain_reader_tick();
+		okc("t.idle.msg_window_spent", s_disconnects == disconnects + 1);
+		s_cfg.cb.on_disconnected(70);
 		s_fake_now_ms = 0;
 	}
 
