@@ -779,7 +779,7 @@ static int matter_ble_init(void)
 	k_work_init(&s_msg_work, msg_work_handler);
 	k_work_init(&s_hs_work, hs_work_handler);
 	reset_link();
-	LOG_INF("0xFFF6 transport ready (rx buffer %u B); the service itself is published "
+	LOG_DBG("0xFFF6 transport ready (rx buffer %u B); the service itself is published "
 		"only while commissioning is possible", (unsigned int)sizeof(s_rx_buf));
 	return 0;
 }

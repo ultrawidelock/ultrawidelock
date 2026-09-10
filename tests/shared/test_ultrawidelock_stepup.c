@@ -207,6 +207,16 @@ static void t_spec_keys_and_codec(void)
 	chk("open_sessiondata rc", ultrawidelock_stepup_open_sessiondata(&sc, sdresp, sdrespn, devresp,
 								 sizeof(devresp), &devn) == 0);
 	chk_hex("DeviceResponse (decrypted)", devresp, devn, K_DEVRESP);
+
+	/* In place, the way the reader's learn path opens it: the plaintext goes
+	 * back into the SessionData buffer it arrived in. */
+	struct ultrawidelock_secchan sc2;
+
+	ultrawidelock_stepup_channel_init(&sc2, skr, skd);
+	chk("open_sessiondata in place rc",
+	    ultrawidelock_stepup_open_sessiondata(&sc2, sdresp, sdrespn, sdresp, sizeof(sdresp),
+						  &devn) == 0);
+	chk_hex("DeviceResponse (decrypted in place)", sdresp, devn, K_DEVRESP);
 }
 
 static void t_spec_parse_and_digest(void)

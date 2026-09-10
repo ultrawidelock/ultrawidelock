@@ -291,11 +291,12 @@ static size_t s_stepup_sd_len;
 static uint16_t s_stepup_sd_owner = STEPUP_SD_FREE;
 
 /* The learn path verifies on the BLE-host task, inside the transaction: the
- * phone is waiting for AP-Completed and nothing else can proceed, so one
- * decrypted DeviceResponse and one parsed document at a time is the whole
- * demand. Static rather than on that task's stack, which the Zephyr port sizes
- * at 4 KiB. The plaintext is 16 bytes shorter than the SessionData it came in. */
-static uint8_t s_learn_scratch[STEPUP_SD_MAX];
+ * phone is waiting for AP-Completed and nothing else can proceed, so one parsed
+ * document at a time is the whole demand. Static rather than on that task's
+ * stack, which the Zephyr port sizes at 4 KiB. The DeviceResponse it points
+ * into is decrypted in place, over the SessionData in s_stepup_sd: a second
+ * 1.5 KiB buffer for the plaintext is what the anchorlink and release client
+ * images could not spare. */
 static struct ultrawidelock_stepup_doc s_learn_doc;
 
 /* Give the collection buffer back if conn holds it; a no-op otherwise. */
@@ -1520,12 +1521,11 @@ static int learn_verify(struct ultrawidelock_session *s,
 	}
 	if (s_stepup_sd_owner != s->conn_handle ||
 	    ultrawidelock_stepup_open_sessiondata(&s->stepup_sc, s_stepup_sd, s_stepup_sd_len,
-						  s_learn_scratch, sizeof(s_learn_scratch),
-						  &dr_len) != 0) {
+						  s_stepup_sd, sizeof(s_stepup_sd), &dr_len) != 0) {
 		*why = "document did not authenticate";
 		return -1;
 	}
-	if (ultrawidelock_stepup_parse_response(s_learn_scratch, dr_len, &s_learn_doc) != 0) {
+	if (ultrawidelock_stepup_parse_response(s_stepup_sd, dr_len, &s_learn_doc) != 0) {
 		*why = "document malformed";
 		return -1;
 	}
@@ -1676,10 +1676,10 @@ static void learn_decide(struct ultrawidelock_session *s)
 	const char *why = NULL;
 	int iss = learn_verify(s, issuer_pub, &why, &v);
 
-	/* The document, decrypted and as collected, and the pointers into it are
-	 * done with. */
+	/* The document, decrypted in place over what was collected, and the
+	 * pointers into it are done with. */
 	memset(&s_learn_doc, 0, sizeof(s_learn_doc));
-	memset(s_learn_scratch, 0, sizeof(s_learn_scratch));
+	memset(s_stepup_sd, 0, sizeof(s_stepup_sd));
 	stepup_sd_release(s->conn_handle);
 
 	if (iss < 0) {
