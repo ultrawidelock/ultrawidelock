@@ -43,6 +43,20 @@ extern "C" {
  * and eviction (below) is what makes running out survivable rather than fatal.
  */
 #define ULTRAWIDELOCK_TRUST_MAX       6u  /* trusted credential keys the store holds */
+/*
+ * Credential issuer keys the store holds. One per home member's Apple ID in
+ * practice (Apple installs the issuer once, then one endpoint key per phone);
+ * the Nordic reference lock defaults to 5. The Matter cluster reports this
+ * number as NumberOfAliroCredentialIssuerKeysSupported, so an install past it
+ * is refused rather than evicted: an issuer is a trust root the admin placed,
+ * and dropping one silently would revoke every key it vouched for.
+ */
+#define ULTRAWIDELOCK_ISSUER_MAX      5u
+#define ULTRAWIDELOCK_ANCHOR_ISSUER_NONE 0u /* anchor_issuer: no issuer vouched for it */
+/* Door Lock CredentialTypeEnum values the store files keys under; the Matter
+ * module carries its own copies and the apps assert they agree. */
+#define ULTRAWIDELOCK_CRED_TYPE_ALIRO_ISSUER    6u /* AliroCredentialIssuerKey */
+#define ULTRAWIDELOCK_CRED_TYPE_ALIRO_EVICTABLE 7u /* AliroEvictableEndpointKey */
 #define ULTRAWIDELOCK_GRK_LEN         16u /* group resolving key (credential BLE-UWB adv tag) */
 #define ULTRAWIDELOCK_KPERSISTENT_LEN 32u /* per-credential expedited-fast key (§8.3.1.13) */
 /*
@@ -101,22 +115,47 @@ struct ultrawidelock_trust_store {
 	uint8_t cred_type[ULTRAWIDELOCK_TRUST_MAX];
 	uint16_t cred_index[ULTRAWIDELOCK_TRUST_MAX];
 	uint16_t user_index[ULTRAWIDELOCK_TRUST_MAX];
+	/*
+	 * Which issuer vouched for this anchor, as 1 + the issuer slot, or
+	 * ULTRAWIDELOCK_ANCHOR_ISSUER_NONE (0) for a key an admin or a bench
+	 * command installed. Set only for a key the reader LEARNED from an Access
+	 * Document (below); revoking that issuer revokes every anchor bound to it.
+	 * Zero-based would make an all-zero store claim every anchor for slot 0.
+	 */
+	uint8_t anchor_issuer[ULTRAWIDELOCK_TRUST_MAX];
+	/*
+	 * Credential issuer public keys (Matter SetCredential type 6,
+	 * AliroCredentialIssuerKey). Not anchors: no phone presents one. They are
+	 * the trust roots the step-up Access Document is signed under, which is
+	 * how a device the hub never installed a key for -- an Apple Watch on the
+	 * owner's Apple ID -- proves it belongs to a home this reader trusts.
+	 * Installed by the admin, never evicted, removed only by ClearCredential /
+	 * ClearUser; the indices are what those commands name them by.
+	 */
+	uint8_t issuer_count;
+	uint8_t issuer_pub[ULTRAWIDELOCK_ISSUER_MAX][ULTRAWIDELOCK_CRED_PUB_LEN];
+	uint16_t issuer_cred_index[ULTRAWIDELOCK_ISSUER_MAX];
+	uint16_t issuer_user_index[ULTRAWIDELOCK_ISSUER_MAX];
 };
 
-/* Serialised blob v4: magic(4) ver(1) flags(1) reader_id(32) sign_priv(32)
+/* Serialised blob v5: magic(4) ver(1) flags(1) reader_id(32) sign_priv(32)
  * grk(16) count(1), count * cred_pub(65), kp_valid(1), count * kpersistent(32),
- * count * (cred_type(1) cred_index(2) user_index(2)), the indices big-endian.
- * (v3 ended at the kpersistent array, v2 at the cred_pub array, v1 also had no
- * grk. All three are still parsed; their anchors carry no Matter index, so a
- * board provisioned before this format cannot have a credential revoked by
- * index until its owner re-installs it.) */
+ * count * (cred_type(1) cred_index(2) user_index(2)), the indices big-endian,
+ * count * anchor_issuer(1), issuer_count(1),
+ * issuer_count * (issuer_pub(65) cred_index(2) user_index(2)).
+ * (v4 ended at the Matter index triples, v3 at the kpersistent array, v2 at the
+ * cred_pub array, v1 also had no grk. All four are still parsed; a pre-v5 blob
+ * holds no issuer and binds no anchor to one, and pre-v4 anchors carry no
+ * Matter index, so a board provisioned before this format cannot have a
+ * credential revoked by index until its owner re-installs it.) */
 #define ULTRAWIDELOCK_PROV_BLOB_HDR 6u
 #define ULTRAWIDELOCK_PROV_BLOB_MAX                                                                \
 	(ULTRAWIDELOCK_PROV_BLOB_HDR + ULTRAWIDELOCK_READER_ID_LEN +                               \
 	 ULTRAWIDELOCK_READER_PRIV_LEN + ULTRAWIDELOCK_GRK_LEN + 1u +                              \
 	 (size_t)ULTRAWIDELOCK_TRUST_MAX * ULTRAWIDELOCK_CRED_PUB_LEN + 1u +                       \
 	 (size_t)ULTRAWIDELOCK_TRUST_MAX * ULTRAWIDELOCK_KPERSISTENT_LEN +                         \
-	 (size_t)ULTRAWIDELOCK_TRUST_MAX * 5u)
+	 (size_t)ULTRAWIDELOCK_TRUST_MAX * 6u + 1u +                                               \
+	 (size_t)ULTRAWIDELOCK_ISSUER_MAX * (ULTRAWIDELOCK_CRED_PUB_LEN + 4u))
 
 /* ---- portable core (ultrawidelock_prov.c) --------------------------------------- */
 
@@ -189,6 +228,46 @@ int ultrawidelock_prov_find_cred_index(const struct ultrawidelock_trust_store *t
  * not a stored credential. */
 int ultrawidelock_prov_kpersistent_set(struct ultrawidelock_trust_store *ts, int idx,
 			       const uint8_t kp[ULTRAWIDELOCK_KPERSISTENT_LEN]);
+
+/* ---- credential issuer keys (Access Document trust roots) ---------------- */
+
+/* Add an issuer public key under the Matter (credential index, user index) it
+ * was installed as. 0 added; 1 already present (its indices are rebound, since
+ * Apple re-installs a key under a fresh index when a user is re-added); -1 if
+ * the point is not uncompressed P-256 or the store already holds
+ * ULTRAWIDELOCK_ISSUER_MAX issuers -- refused, never evicted. */
+int ultrawidelock_prov_issuer_add(struct ultrawidelock_trust_store *ts,
+				  const uint8_t pub[ULTRAWIDELOCK_CRED_PUB_LEN], uint16_t cred_index,
+				  uint16_t user_index);
+
+/* Slot of an issuer public key, or -1 if not present. */
+int ultrawidelock_prov_issuer_find(const struct ultrawidelock_trust_store *ts,
+				   const uint8_t pub[ULTRAWIDELOCK_CRED_PUB_LEN]);
+
+/* Slot of the issuer installed as Matter credential index cred_index (type 6),
+ * or -1. ULTRAWIDELOCK_CRED_INDEX_NONE never matches. */
+int ultrawidelock_prov_issuer_find_index(const struct ultrawidelock_trust_store *ts,
+					 uint16_t cred_index);
+
+/* Drop the issuer at idx and every anchor it vouched for, close both gaps, and
+ * re-point the anchors bound to later issuers. Returns the number of anchors
+ * dropped (0 is success), or -1 if idx is not an occupied issuer slot. */
+int ultrawidelock_prov_issuer_remove_at(struct ultrawidelock_trust_store *ts, int idx);
+
+/* Record that the anchor at idx was learned under the issuer at issuer_slot.
+ * 0 on success; -1 if either index is not an occupied slot. */
+int ultrawidelock_prov_anchor_issuer_set(struct ultrawidelock_trust_store *ts, int idx,
+					 int issuer_slot);
+
+/* Issuer slot the anchor at idx was learned under, or -1 for an anchor no
+ * issuer vouched for (admin- or bench-installed) or an unoccupied idx. */
+int ultrawidelock_prov_anchor_issuer(const struct ultrawidelock_trust_store *ts, int idx);
+
+/* Lowest Matter credential index in 1..ULTRAWIDELOCK_TRUST_MAX that no anchor of
+ * cred_type carries -- what a learned key is filed under so ClearCredential can
+ * name it. 0 when every index of that type is taken. */
+uint16_t ultrawidelock_prov_free_cred_index(const struct ultrawidelock_trust_store *ts,
+					    uint8_t cred_type);
 
 /* ---- target NVS backend (ultrawidelock_prov_nvs.c) ------------------------------ */
 

@@ -54,7 +54,7 @@ _Static_assert(ENTRY_HEADER + OT_OPERATIONAL_DATASET_MAX_LENGTH <= ULTRAWIDELOCK
 
 /*
  * STATIC, not on the stack, for the same reason ultrawidelock_prov_kv.c's buffer is: a
- * record is up to ULTRAWIDELOCK_KV_VALUE_MAX (768) bytes, and that does not fit the
+ * record is up to ULTRAWIDELOCK_KV_VALUE_MAX bytes, and that does not fit the
  * port's 4096-byte task stacks alongside the stack's own frames. One buffer is
  * enough because every caller is the serialized OpenThread runtime
  * (openthread_freertos.c), which never runs two settings calls at once.

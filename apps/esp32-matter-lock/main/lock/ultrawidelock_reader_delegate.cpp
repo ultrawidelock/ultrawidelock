@@ -173,10 +173,13 @@ uint8_t UltraWideLockReaderDelegate::GetAliroBLEAdvertisingVersion()
 	return 0;
 }
 
-// Returns the number of Aliro credential issuer keys supported, kAliroKeysSupported.
+// Returns the number of Aliro credential issuer keys supported: what the reader's issuer store
+// holds. An issuer key is the trust root the step-up Access Document is signed under, kept in
+// the reader (door_lock_callbacks.cpp mirrors it there) and refused once the store is full, so
+// the number told to the controller must be that store's.
 uint16_t UltraWideLockReaderDelegate::GetNumberOfAliroCredentialIssuerKeysSupported()
 {
-	return kAliroKeysSupported;
+	return ULTRAWIDELOCK_READER_ISSUER_KEYS_MAX;
 }
 
 // Returns the number of Aliro endpoint keys supported, kAliroKeysSupported.

@@ -30,10 +30,13 @@
 #include "ultrawidelock_apdu.h"
 #include "ultrawidelock_ble.h"
 #include "ultrawidelock_crypto.h"
+#include "ultrawidelock_cw.h"
+#include "ultrawidelock_hash.h"
 #include "ultrawidelock_lab.h"
 #include "ultrawidelock_prim.h"
 #include "ultrawidelock_prov.h"
 #include "ultrawidelock_ranging.h"
+#include "ultrawidelock_stepup.h"
 #include <ultrawidelock/reader.h>
 /* ultrawidelock_uptime_ms: the clock the status tick's deadline uses */
 #include "ultrawidelock_port.h"
@@ -252,6 +255,41 @@ static void tx_reset(void)
 {
 	s_txn = 0;
 	s_tx_rd = 0;
+}
+
+/* ---- step-up worker seam double (the bench-armed path only) ------------- */
+
+static int s_worker_submits;
+
+int ultrawidelock_stepup_worker_submit(const struct ultrawidelock_stepup_job *job)
+{
+	(void)job;
+	s_worker_submits++;
+	return 0;
+}
+
+int ultrawidelock_stepup_worker_last(struct ultrawidelock_stepup_verdict *verdict, uint16_t *conn)
+{
+	(void)verdict;
+	(void)conn;
+	return 0;
+}
+
+/* ---- learned-credential listener double --------------------------------- */
+
+static int s_learned_calls;
+static uint8_t s_learned_type;
+static uint16_t s_learned_index, s_learned_user;
+static uint8_t s_learned_pub[65];
+
+static void on_learned(uint8_t cred_type, uint16_t cred_index, uint16_t user_index,
+		       const uint8_t cred_pub[65])
+{
+	s_learned_calls++;
+	s_learned_type = cred_type;
+	s_learned_index = cred_index;
+	s_learned_user = user_index;
+	memcpy(s_learned_pub, cred_pub, 65);
 }
 
 /* ---- ultrawidelock_ranging double ------------------------------------------------ */
@@ -771,6 +809,227 @@ static uint32_t ph_sid(const struct ph *p)
 {
 	return ((uint32_t)p->txid[12] << 24) | ((uint32_t)p->txid[13] << 16) |
 	       ((uint32_t)p->txid[14] << 8) | (uint32_t)p->txid[15];
+}
+
+/* ---- section-G phone: the step-up Access Document ------------------------ */
+
+static int has_bytes(const uint8_t *hay, size_t hn, const char *needle)
+{
+	size_t nn = strlen(needle);
+
+	for (size_t i = 0; i + nn <= hn; i++) {
+		if (memcmp(hay + i, needle, nn) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* Aliro §7.2.1 key identifier: the first bytes of SHA-256("key-identifier" || pub). */
+static void kid_of(const uint8_t pub[65], uint8_t kid[8])
+{
+	uint8_t in[14 + 65], h[32];
+
+	memcpy(in, "key-identifier", 14);
+	memcpy(in + 14, pub, 65);
+	ultrawidelock_sha256(in, sizeof(in), h);
+	memcpy(kid, h, 8);
+}
+
+/* Consume the reader's ENVELOPE(DeviceRequest), open it off the StepUpSK reader
+ * channel and hand back the DeviceRequest plaintext. -1 if the next frame is not
+ * an ENVELOPE or the two key derivations disagree. */
+static int ph_take_envelope(struct ph *p, uint8_t *out, size_t cap, size_t *out_len)
+{
+	size_t n;
+	const uint8_t *f = tx_next(&n);
+	const uint8_t *body, *blob;
+	size_t blen, bl;
+	uint8_t ins, skr[32], skd[32];
+	uint32_t ctr = 1;
+
+	if (f == NULL || parse_cmd(f, n, &ins, &body, &blen) != 0 || ins != ULTRAWIDELOCK_INS_ENVELOPE) {
+		return -1;
+	}
+	if (ultrawidelock_stepup_unwrap_sessiondata_raw(body, blen, &blob, &bl) != 0 || bl < 16 ||
+	    bl - 16 > cap) {
+		return -1;
+	}
+	if (ultrawidelock_stepup_derive_keys(p->block, skr, skd) != 0) {
+		return -1;
+	}
+	if (ph_open(skr, &ctr, NULL, 0, blob, bl - 16, blob + bl - 16, out) != 0) {
+		return -1;
+	}
+	*out_len = bl - 16;
+	return 0;
+}
+
+/* Answer the ENVELOPE: a DeviceResponse sealed on the StepUpSK device channel
+ * (SessionData {"data": ct||tag}) plus the status word. n == 0 sends the bare
+ * status word, which is how a device declines. */
+static void ph_stepup_resp(struct ph *p, uint16_t conn, const uint8_t *devresp, size_t n,
+			   uint8_t sw1, uint8_t sw2)
+{
+	uint8_t skr[32], skd[32], blob[1100], pl[1200];
+	uint32_t ctr = 1;
+	size_t sdn = 0;
+
+	if (n > 0) {
+		ultrawidelock_stepup_derive_keys(p->block, skr, skd);
+		if (ph_seal(skd, &ctr, NULL, 0, devresp, n, blob, blob + n) != 0 ||
+		    ultrawidelock_stepup_wrap_sessiondata_raw(blob, n + 16, pl, sizeof(pl) - 2, &sdn) != 0) {
+			return;
+		}
+	}
+	pl[sdn] = sw1;
+	pl[sdn + 1] = sw2;
+	ph_send(conn, ULTRAWIDELOCK_PROTO_ACCESS, ULTRAWIDELOCK_AP_OP_RESPONSE, pl, sdn + 2);
+}
+
+/* Mint an Access Document: an ISO 18013-5 DeviceResponse whose one "aliro-a"
+ * document carries a "matter1" element and an MSO naming device_pub as the
+ * deviceKey, IssuerAuth ES256-signed by signer_priv. kid (may be NULL) rides the
+ * unprotected header as label 4; x5_pub (may be NULL) as a label-33 stand-in
+ * certificate holding that key's SPKI marker, which is what the verifier's
+ * x5chain extractor looks for. */
+static int build_access_document(const uint8_t device_pub[65], const uint8_t signer_priv[32],
+				 const uint8_t *kid, size_t kid_len, const uint8_t *x5_pub,
+				 uint8_t *out, size_t cap, size_t *out_len)
+{
+	uint8_t item[96], mso[320], payload[340], sigst[400], sig[64], digest[32];
+	struct cw w;
+	static const uint8_t rnd[16] = {0x52, 0x4e, 0x44, 0x00, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+	static const uint8_t prot[3] = {0xa1, 0x01, 0x26}; /* {1: -7} = ES256 */
+
+	/* IssuerSignedItem, tagged 24(bstr(...)); the digest covers the tagged form. */
+	{
+		uint8_t inner[64];
+		struct cw iw = {inner, inner + sizeof(inner), 0};
+
+		cw_map(&iw, 4);
+		cw_tstr(&iw, "1");
+		cw_type(&iw, 0x00, 1); /* digestID 1 */
+		cw_tstr(&iw, "2");
+		cw_bstr(&iw, rnd, sizeof(rnd));
+		cw_tstr(&iw, "3");
+		cw_tstr(&iw, "matter1");
+		cw_tstr(&iw, "4");
+		cw_tstr(&iw, "ok");
+		w = (struct cw){item, item + sizeof(item), 0};
+		cw_tag(&w, 24);
+		cw_bstr(&w, inner, (size_t)(iw.p - inner));
+		if (iw.err || w.err) {
+			return -1;
+		}
+	}
+	size_t item_len = (size_t)(w.p - item);
+
+	ultrawidelock_sha256(item, item_len, digest);
+
+	/* MSO: version, digest alg, valueDigests, deviceKeyInfo, docType, validity, twr. */
+	w = (struct cw){mso, mso + sizeof(mso), 0};
+	cw_map(&w, 7);
+	cw_tstr(&w, "1");
+	cw_tstr(&w, "1.0");
+	cw_tstr(&w, "2");
+	cw_tstr(&w, "SHA-256");
+	cw_tstr(&w, "3");
+	cw_map(&w, 1);
+	cw_tstr(&w, "aliro-a");
+	cw_map(&w, 1);
+	cw_type(&w, 0x00, 1);
+	cw_bstr(&w, digest, 32);
+	cw_tstr(&w, "4");
+	cw_map(&w, 1);
+	cw_tstr(&w, "1");
+	cw_map(&w, 4); /* COSE_Key: kty EC2, crv P-256, x, y */
+	cw_type(&w, 0x00, 1);
+	cw_type(&w, 0x00, 2);
+	cw_type(&w, 0x20, 0); /* -1 */
+	cw_type(&w, 0x00, 1);
+	cw_type(&w, 0x20, 1); /* -2 */
+	cw_bstr(&w, device_pub + 1, 32);
+	cw_type(&w, 0x20, 2); /* -3 */
+	cw_bstr(&w, device_pub + 33, 32);
+	cw_tstr(&w, "5");
+	cw_tstr(&w, "aliro-a");
+	cw_tstr(&w, "6");
+	cw_map(&w, 3);
+	cw_tstr(&w, "1");
+	cw_tag(&w, 0);
+	cw_tstr(&w, "2026-09-10T12:00:00Z");
+	cw_tstr(&w, "2");
+	cw_tag(&w, 0);
+	cw_tstr(&w, "2026-09-10T12:00:00Z");
+	cw_tstr(&w, "3");
+	cw_tag(&w, 0);
+	cw_tstr(&w, "4001-01-01T00:00:00Z");
+	cw_tstr(&w, "7");
+	cw_bool(&w, 0);
+	if (w.err) {
+		return -1;
+	}
+	size_t mso_len = (size_t)(w.p - mso);
+
+	/* payload = 24(bstr(MSO)) */
+	w = (struct cw){payload, payload + sizeof(payload), 0};
+	cw_tag(&w, 24);
+	cw_bstr(&w, mso, mso_len);
+	size_t payload_len = (size_t)(w.p - payload);
+
+	/* Sig_structure = ["Signature1", protected, external_aad, payload] */
+	w = (struct cw){sigst, sigst + sizeof(sigst), 0};
+	cw_arr(&w, 4);
+	cw_tstr(&w, "Signature1");
+	cw_bstr(&w, prot, sizeof(prot));
+	cw_bstr(&w, NULL, 0);
+	cw_bstr(&w, payload, payload_len);
+	if (w.err || ultrawidelock_ecdsa_p256_sign(signer_priv, sigst, (size_t)(w.p - sigst), sig) != 0) {
+		return -1;
+	}
+
+	/* DeviceResponse {"1": version, "2": [document], "3": status} */
+	w = (struct cw){out, out + cap, 0};
+	cw_map(&w, 3);
+	cw_tstr(&w, "1");
+	cw_tstr(&w, "1.0");
+	cw_tstr(&w, "2");
+	cw_arr(&w, 1);
+	cw_map(&w, 2); /* document */
+	cw_tstr(&w, "1");
+	cw_map(&w, 2); /* issuerSigned */
+	cw_tstr(&w, "1");
+	cw_map(&w, 1); /* nameSpaces */
+	cw_tstr(&w, "aliro-a");
+	cw_arr(&w, 1);
+	cw_raw(&w, item, item_len);
+	cw_tstr(&w, "2");
+	cw_arr(&w, 4); /* issuerAuth COSE_Sign1 */
+	cw_bstr(&w, prot, sizeof(prot));
+	cw_map(&w, (kid != NULL ? 1u : 0u) + (x5_pub != NULL ? 1u : 0u));
+	if (kid != NULL) {
+		cw_type(&w, 0x00, 4);
+		cw_bstr(&w, kid, kid_len);
+	}
+	if (x5_pub != NULL) {
+		uint8_t cert[80] = {0x30, 0x4e, 0x03, 0x42, 0x00};
+
+		memcpy(cert + 5, x5_pub, 65); /* ... 03 42 00 04 || X || Y ... */
+		cw_type(&w, 0x00, 33);
+		cw_bstr(&w, cert, 70);
+	}
+	cw_bstr(&w, payload, payload_len);
+	cw_bstr(&w, sig, 64);
+	cw_tstr(&w, "5");
+	cw_tstr(&w, "aliro-a");
+	cw_tstr(&w, "3");
+	cw_type(&w, 0x00, 0);
+	if (w.err) {
+		return -1;
+	}
+	*out_len = (size_t)(w.p - out);
+	return 0;
 }
 
 /* ---- section-E phone variants (error-path walk-ups) ---------------------- */
@@ -2235,6 +2494,203 @@ int main(void)
 		s_cfg.cb.on_disconnected(61);
 		s_fake_now_ms = 0;
 	}
+
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+	printf("\n== G: an unknown key learned from its Access Document ==\n");
+	/*
+	 * Apple Home installs the home's credential issuer key (SetCredential type
+	 * 6) and an endpoint key per phone; a Watch on the same Apple ID gets no
+	 * SetCredential of its own (every field log so far). Aliro's answer is the
+	 * step-up phase: the reader asks the unknown device for its Access Document
+	 * and, only if an issuer the admin installed signed it over this very key,
+	 * learns the key as an evictable anchor. Until then the door stays shut.
+	 */
+	{
+		uint8_t rid[32], sp[32], grk0[16] = {0};
+		uint8_t iss_priv[32], iss_pub[65], kid[8];
+		uint8_t rogue_priv[32], rogue_pub[65], rkid[8];
+		uint8_t devreq[256], doc[1024];
+		size_t drn, dn;
+		struct ph q, r;
+		int learned = s_learned_calls;
+		int stores, starts, disconnects;
+
+		memset(rid, 0xA0, sizeof(rid));
+		memset(sp, 0x33, sizeof(sp));
+		okc("g.provision_id", ultrawidelock_reader_provision_identity(rid, sp, grk0) == 0);
+		(void)ultrawidelock_reader_trust_clear();
+		memset(iss_priv, 0xA7, sizeof(iss_priv));
+		ultrawidelock_ec_p256_pub_from_priv(iss_priv, iss_pub);
+		kid_of(iss_pub, kid);
+		memset(rogue_priv, 0xA8, sizeof(rogue_priv));
+		ultrawidelock_ec_p256_pub_from_priv(rogue_priv, rogue_pub);
+		kid_of(rogue_pub, rkid);
+		ultrawidelock_reader_set_credential_learned_listener(on_learned);
+
+		okc("g.remove_absent_issuer", ultrawidelock_reader_provision_remove_issuer(1u) == 1);
+		okc("g.add_issuer", ultrawidelock_reader_provision_add_issuer(iss_pub, 1u, 3u) == 0);
+		okc("g.add_issuer_dup", ultrawidelock_reader_provision_add_issuer(iss_pub, 1u, 3u) == 1);
+		rogue_pub[0] = 0x02;
+		okc("g.add_issuer_badpoint",
+		    ultrawidelock_reader_provision_add_issuer(rogue_pub, 2u, 3u) == -1);
+		rogue_pub[0] = 0x04;
+
+		memset(&q, 0, sizeof(q));
+		ultrawidelock_ec_p256_pub_from_priv(sp, q.rvk);
+		memset(q.cred_priv, 0xC7, sizeof(q.cred_priv));
+		ultrawidelock_ec_p256_pub_from_priv(q.cred_priv, q.cred_pub);
+		memset(&r, 0, sizeof(r));
+		memcpy(r.rvk, q.rvk, sizeof(r.rvk));
+		memset(r.cred_priv, 0xC8, sizeof(r.cred_priv));
+		ultrawidelock_ec_p256_pub_from_priv(r.cred_priv, r.cred_pub);
+
+		/* Eight walk-ups of up to five frames each: reclaim the recording
+		 * queue here and again midway. */
+		tx_reset();
+
+		/* G1: the unknown key is asked for its document, and the document
+		 * vouches for it: learned, persisted, and only then granted. */
+		stores = s_nvs_stores;
+		starts = s_rng_starts;
+		s_cfg.cb.on_connected(70);
+		ph_initiate(&q, 70, 0);
+		okc("g1.auth0", ph_take_auth0(&q) == 0);
+		okc("g1.standard_phase", q.exp_phase == 0x00);
+		ph_auth0_resp(&q, 70, 0xE7);
+		okc("g1.auth1_resp", ph_auth1_resp(&q, 70, NULL, 0) == 0);
+		okc("g1.exchange_not_a_drop", tx_pending() == 1);
+		okc("g1.not_granted_yet", !ultrawidelock_reader_authenticated_credential(out65));
+		okc("g1.exchange", ph_exchange_resp(&q, 70) == 0);
+		okc("g1.envelope_asks_matter1",
+		    ph_take_envelope(&q, devreq, sizeof(devreq), &drn) == 0 &&
+			    has_bytes(devreq, drn, "matter1"));
+		okc("g1.ap_held_for_the_document", tx_pending() == 0 && s_rng_starts == starts);
+		okc("g1.doc", build_access_document(q.cred_pub, iss_priv, kid, sizeof(kid), NULL, doc,
+						    sizeof(doc), &dn) == 0);
+		ph_stepup_resp(&q, 70, doc, dn, 0x90, 0x00);
+		okc("g1.ap_completed", ph_take_ap_completed(&q) == 0);
+		okc("g1.ranging_armed", s_rng_starts == starts + 1);
+		okc("g1.granted", ultrawidelock_reader_authenticated_credential(out65) &&
+					  memcmp(out65, q.cred_pub, 65) == 0);
+		okc("g1.persisted_before_grant", s_nvs_stores == stores + 1);
+		okc("g1.learned_as_evictable_key",
+		    s_learned_calls == learned + 1 && s_learned_type == 7u && s_learned_index == 1u &&
+			    s_learned_user == 3u && memcmp(s_learned_pub, q.cred_pub, 65) == 0);
+		okc("g1.no_worker_job", s_worker_submits == 0);
+		s_cfg.cb.on_disconnected(70);
+
+		/* G2: the next walk-up is an ordinary trusted one: fast offered off
+		 * the Kpersistent minted with the learn, no document asked for. */
+		s_cfg.cb.on_connected(71);
+		ph_initiate(&q, 71, 0);
+		okc("g2.auth0", ph_take_auth0(&q) == 0);
+		okc("g2.fast_offered", q.exp_phase == 0x01);
+		ph_auth0_resp(&q, 71, 0xE8);
+		okc("g2.auth1_resp", ph_auth1_resp(&q, 71, NULL, 0) == 0);
+		okc("g2.exchange", ph_exchange_resp(&q, 71) == 0);
+		okc("g2.ap_completed_no_envelope", ph_take_ap_completed(&q) == 0 && tx_pending() == 0);
+		okc("g2.not_learned_twice", s_learned_calls == learned + 1);
+		s_cfg.cb.on_disconnected(71);
+
+		/* G3: a document that vouches for a DIFFERENT key. */
+		disconnects = s_disconnects;
+		stores = s_nvs_stores;
+		s_cfg.cb.on_connected(72);
+		ph_initiate(&r, 72, 0);
+		okc("g3.auth0", ph_take_auth0(&r) == 0);
+		ph_auth0_resp(&r, 72, 0xE9);
+		okc("g3.auth1_resp", ph_auth1_resp(&r, 72, NULL, 0) == 0);
+		okc("g3.exchange", ph_exchange_resp(&r, 72) == 0);
+		okc("g3.envelope", ph_take_envelope(&r, devreq, sizeof(devreq), &drn) == 0);
+		okc("g3.doc", build_access_document(q.cred_pub, iss_priv, kid, sizeof(kid), NULL, doc,
+						    sizeof(doc), &dn) == 0);
+		ph_stepup_resp(&r, 72, doc, dn, 0x90, 0x00);
+		okc("g3.rejected", tx_pending() == 0 && s_disconnects == disconnects + 1);
+		okc("g3.nothing_learned", s_learned_calls == learned + 1 && s_nvs_stores == stores);
+		s_cfg.cb.on_disconnected(72);
+
+		/* G4: signed by an issuer no admin installed. */
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(73);
+		ph_initiate(&r, 73, 0);
+		okc("g4.auth0", ph_take_auth0(&r) == 0);
+		ph_auth0_resp(&r, 73, 0xEA);
+		okc("g4.auth1_resp", ph_auth1_resp(&r, 73, NULL, 0) == 0);
+		okc("g4.exchange", ph_exchange_resp(&r, 73) == 0);
+		okc("g4.envelope", ph_take_envelope(&r, devreq, sizeof(devreq), &drn) == 0);
+		okc("g4.doc", build_access_document(r.cred_pub, rogue_priv, rkid, sizeof(rkid), NULL,
+						    doc, sizeof(doc), &dn) == 0);
+		ph_stepup_resp(&r, 73, doc, dn, 0x90, 0x00);
+		okc("g4.rejected", tx_pending() == 0 && s_disconnects == disconnects + 1);
+		okc("g4.nothing_learned", s_learned_calls == learned + 1);
+		s_cfg.cb.on_disconnected(73);
+
+		/* G5: the document carries the signer's own certificate (x5chain) and
+		 * no kid. A key the document brings along vouches for nothing. */
+		tx_reset();
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(74);
+		ph_initiate(&r, 74, 0);
+		okc("g5.auth0", ph_take_auth0(&r) == 0);
+		ph_auth0_resp(&r, 74, 0xEB);
+		okc("g5.auth1_resp", ph_auth1_resp(&r, 74, NULL, 0) == 0);
+		okc("g5.exchange", ph_exchange_resp(&r, 74) == 0);
+		okc("g5.envelope", ph_take_envelope(&r, devreq, sizeof(devreq), &drn) == 0);
+		okc("g5.doc", build_access_document(r.cred_pub, rogue_priv, NULL, 0, rogue_pub, doc,
+						    sizeof(doc), &dn) == 0);
+		ph_stepup_resp(&r, 74, doc, dn, 0x90, 0x00);
+		okc("g5.rejected", tx_pending() == 0 && s_disconnects == disconnects + 1);
+		okc("g5.nothing_learned", s_learned_calls == learned + 1);
+		s_cfg.cb.on_disconnected(74);
+
+		/* G6: the device declines to present a document. */
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(75);
+		ph_initiate(&r, 75, 0);
+		okc("g6.auth0", ph_take_auth0(&r) == 0);
+		ph_auth0_resp(&r, 75, 0xEC);
+		okc("g6.auth1_resp", ph_auth1_resp(&r, 75, NULL, 0) == 0);
+		okc("g6.exchange", ph_exchange_resp(&r, 75) == 0);
+		okc("g6.envelope", ph_take_envelope(&r, devreq, sizeof(devreq), &drn) == 0);
+		ph_stepup_resp(&r, 75, NULL, 0, 0x6A, 0x82);
+		okc("g6.rejected", tx_pending() == 0 && s_disconnects == disconnects + 1);
+		s_cfg.cb.on_disconnected(75);
+
+		/* G7: a valid document whose kid does not name the issuer: the
+		 * signature decides, the kid is not consulted. r is learned under
+		 * index 2, the next free one of its type. */
+		s_cfg.cb.on_connected(76);
+		ph_initiate(&r, 76, 0);
+		okc("g7.auth0", ph_take_auth0(&r) == 0);
+		ph_auth0_resp(&r, 76, 0xED);
+		okc("g7.auth1_resp", ph_auth1_resp(&r, 76, NULL, 0) == 0);
+		okc("g7.exchange", ph_exchange_resp(&r, 76) == 0);
+		okc("g7.envelope", ph_take_envelope(&r, devreq, sizeof(devreq), &drn) == 0);
+		okc("g7.doc", build_access_document(r.cred_pub, iss_priv, rkid, sizeof(rkid), NULL,
+						    doc, sizeof(doc), &dn) == 0);
+		ph_stepup_resp(&r, 76, doc, dn, 0x90, 0x00);
+		okc("g7.ap_completed", ph_take_ap_completed(&r) == 0);
+		okc("g7.learned_at_next_index",
+		    s_learned_calls == learned + 2 && s_learned_index == 2u &&
+			    memcmp(s_learned_pub, r.cred_pub, 65) == 0);
+		s_cfg.cb.on_disconnected(76);
+
+		/* G8: revoking the issuer revokes both keys it vouched for. Without
+		 * an issuer the verdict is the old one: rejected at AUTH1, no
+		 * EXCHANGE, no document asked for. */
+		okc("g8.remove_issuer", ultrawidelock_reader_provision_remove_issuer(1u) == 0);
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(77);
+		ph_initiate(&q, 77, 0);
+		okc("g8.auth0", ph_take_auth0(&q) == 0);
+		okc("g8.no_fast_left", q.exp_phase == 0x00);
+		ph_auth0_resp(&q, 77, 0xEE);
+		okc("g8.auth1_resp", ph_auth1_resp(&q, 77, NULL, 0) == 0);
+		okc("g8.rejected_at_auth1", tx_pending() == 0 && s_disconnects == disconnects + 1);
+		s_cfg.cb.on_disconnected(77);
+		ultrawidelock_reader_set_credential_learned_listener(NULL);
+	}
+#endif /* CONFIG_ULTRAWIDELOCK_CRED_STEPUP */
 
 	/* console/status entry points: exercised for effect-free execution */
 	ultrawidelock_reader_prov_print();

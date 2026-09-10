@@ -35,6 +35,9 @@ _Static_assert(ULTRAWIDELOCK_PROV_BLOB_MAX <= ULTRAWIDELOCK_KV_VALUE_MAX,
 
 K_MUTEX_DEFINE(s_backend_lock);
 
+/* The one serialised-blob buffer, for load and store alike; see prov_load_locked(). */
+static uint8_t s_blob[ULTRAWIDELOCK_PROV_BLOB_MAX];
+
 /*
  * Store errors, mapped onto the errno values this backend's callers already
  * handle. Only ULTRAWIDELOCK_KV_INVALID carries information they act on -- it
@@ -74,10 +77,14 @@ static int prov_load_locked(struct ultrawidelock_reader_identity *id,
 	 * advert line.
 	 *
 	 * Safe as static because s_backend_lock covers the complete read and
-	 * deserialization, as well as every store and erase of the same record.
+	 * deserialization, as well as every store and erase of the same record --
+	 * which is also why load and store share the one buffer (s_blob): the
+	 * blob grew past 1 KiB with the issuer keys, and the nRF52833 has no RAM
+	 * for a second copy that the lock guarantees is never in use at the
+	 * same time.
 	 */
-	static uint8_t blob[ULTRAWIDELOCK_PROV_BLOB_MAX];
-	size_t len = sizeof(blob);
+	uint8_t *blob = s_blob;
+	size_t len = sizeof(s_blob);
 	int rc = ultrawidelock_kv_init();
 
 	if (rc != ULTRAWIDELOCK_KV_OK) {
@@ -166,17 +173,16 @@ int ultrawidelock_prov_erase(void)
 static int prov_store_locked(const struct ultrawidelock_reader_identity *id,
 			     const struct ultrawidelock_trust_store *ts)
 {
-	static uint8_t blob[ULTRAWIDELOCK_PROV_BLOB_MAX];
 	size_t len = 0;
 	int rc = ultrawidelock_kv_init();
 
 	if (rc != ULTRAWIDELOCK_KV_OK) {
 		return prov_errno(rc);
 	}
-	if (ultrawidelock_prov_serialize(id, ts, blob, sizeof(blob), &len) != 0) {
+	if (ultrawidelock_prov_serialize(id, ts, s_blob, sizeof(s_blob), &len) != 0) {
 		return -EINVAL;
 	}
-	return prov_errno(ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, blob, len));
+	return prov_errno(ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_CRED_PROV, s_blob, len));
 }
 
 int ultrawidelock_prov_store(const struct ultrawidelock_reader_identity *id,

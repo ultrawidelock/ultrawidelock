@@ -26,7 +26,7 @@
 #include <ultrawidelock/reader.h>
 #include <ultrawidelock/uwb.h>
 
-#include "rtt_bench.h" /* `trust` / `prov` typed at the RTT terminal */
+#include "rtt_bench.h" /* `prov` typed at the RTT terminal */
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
 #include "matter_client.h"
@@ -552,6 +552,18 @@ static bool uwb_policy_enabled(uint8_t policy_flags, uint8_t policy)
 	return (policy_flags & policy) != 0u;
 }
 
+/* A key the reader learned from a device's Access Document -- an Apple Watch on
+ * the owner's Apple ID, in every field log so far -- rather than from a Matter
+ * SetCredential. One line, so the RTT log says why an approach that used to end
+ * in "credential key NOT trusted" now unlocks. First 4 bytes of the point only. */
+static void on_credential_learned(uint8_t cred_type, uint16_t cred_index, uint16_t user_index,
+				  const uint8_t cred_pub[65])
+{
+	LOG_INF("LEARNED from Access Document: type %u cred %u user %u key %02x%02x%02x%02x...",
+		(unsigned int)cred_type, (unsigned int)cred_index, (unsigned int)user_index,
+		cred_pub[0], cred_pub[1], cred_pub[2], cred_pub[3]);
+}
+
 int main(void)
 {
 	/* Off before the radio comes up: keeps the ranging callbacks print-free so the
@@ -571,6 +583,8 @@ int main(void)
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_FACTORY_RESET_BUTTON)
 	factory_reset_if_requested();
 #endif
+
+	ultrawidelock_reader_set_credential_learned_listener(on_credential_learned);
 
 	int rc = ultrawidelock_reader_start();
 

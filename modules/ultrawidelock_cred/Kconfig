@@ -35,6 +35,35 @@ config ULTRAWIDELOCK_CRED_DEV_TRUST
 	  credential when no trust anchors exist. This bypass is for isolated lab
 	  bring-up only. Production and release images must leave it disabled.
 
+config ULTRAWIDELOCK_CRED_STEPUP
+	bool "Credential step-up (Access Document) phase"
+	help
+	  Build the Aliro v1.0 §8.4 step-up phase into the reader: after the
+	  standard EXCHANGE the reader can request an ISO 18013-5 Access Document
+	  from the user device (ENVELOPE / GET RESPONSE APDUs carrying a
+	  session-encrypted DeviceRequest/DeviceResponse) and verify it per §7.4.
+
+	  This is what admits a device the Matter hub never sent a SetCredential
+	  for -- an Apple Watch on the owner's Apple ID, in every field log so
+	  far. A presented key no anchor matches is asked for its document while
+	  an issuer key (SetCredential type 6) is held; only a document a stored
+	  issuer signed over that very key learns it as an evictable anchor, and
+	  the unlock waits on that verdict. Without this option such a key is
+	  rejected at AUTH1, as before. Costs about 4.5 KiB of static RAM, shared
+	  by every session: the collected document, its decrypted form, and the
+	  parsed document (whose capacity the app may trim with
+	  ULTRAWIDELOCK_STEPUP_MAX_DIGESTS / _ITEMS).
+
+config ULTRAWIDELOCK_CRED_STEPUP_BENCH
+	bool "Bench one-shot step-up (ultrawidelock-stepup arm)"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	help
+	  The console-armed one-shot: the next already-trusted phone is asked for
+	  its Access Document and the verdict is verified on a background worker
+	  and logged, never gating access. Needs a console to arm it from and a
+	  port-supplied worker (ultrawidelock_stepup_worker_submit / _last), which
+	  the DWM3001CDK image has neither of, so it stays off there.
+
 config ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE
 	int "Credential housekeeping thread stack size"
 	depends on ULTRAWIDELOCK_CRED_STACK

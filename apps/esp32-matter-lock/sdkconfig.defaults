@@ -87,6 +87,11 @@ CONFIG_SUPPORT_GROUPCAST_CLUSTER=n
 # Advertise the credential protocol (Apple Home Key) Provisioning + BLE-UWB and register the reader delegate
 CONFIG_ENABLE_ULTRAWIDELOCK_BLE_UWB=y
 
+# The step-up phase is how a second device on the owner's Apple ID (a Watch) gets
+# in: the hub never sends a SetCredential for it, so the reader asks the device
+# for its Access Document and learns the key the home's issuer signed.
+CONFIG_ULTRAWIDELOCK_CRED_STEPUP=y
+
 # Keep BLE up after commissioning (do NOT deinit/reclaim it). Required for the
 # credential reader to coexist on Matter's NimBLE host; also, reclaiming BLE makes any
 # later nimble_port_init() crash the controller (btdm_controller_init fault).

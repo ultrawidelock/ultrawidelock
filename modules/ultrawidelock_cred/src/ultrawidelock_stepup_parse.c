@@ -249,6 +249,11 @@ static int key_is(const uint8_t *s, size_t n, char c)
 
 /* ---- RFC 3339 tdate (UTC "Z" form) -> epoch seconds ---------------------- */
 
+/* ULTRAWIDELOCK_STEPUP_LEAN (a -D from a flash-bound app): the document's dates,
+ * the COSE alg label and the x5chain are skipped rather than recorded. Every
+ * struct field stays, zeroed, so the verifier is unchanged; what is lost is
+ * what a reader with no trusted clock and only provisioned issuers never reads. */
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 /**
  * Parse two decimal digits (s[0], s[1]). Returns 0 and *out = 0-99, else -1.
  */
@@ -296,6 +301,7 @@ static int tdate_epoch(const uint8_t *s, size_t n, int64_t *epoch)
 	*epoch = days * 86400 + hh * 3600 + mm * 60 + ss;
 	return 0;
 }
+#endif /* !ULTRAWIDELOCK_STEPUP_LEAN */
 
 /* ---- MobileSecurityObject (Table 7-1) ------------------------------------ */
 
@@ -414,6 +420,7 @@ static int parse_validity(struct cbor *c, struct ultrawidelock_stepup_doc *doc)
 			doc->have_iteration = 1;
 			continue;
 		}
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 		if (key_is(k, kl, '1') || key_is(k, kl, '2') || key_is(k, kl, '3')) {
 			uint64_t tag;
 			const uint8_t *s;
@@ -447,6 +454,7 @@ static int parse_validity(struct cbor *c, struct ultrawidelock_stepup_doc *doc)
 			}
 			continue;
 		}
+#endif /* the dates ("1".."3") fall to the skipper on a lean build */
 		if (cb_skip(c) != 0) { /* expectedUpdate "4" or unknown */
 			return -1;
 		}
@@ -576,6 +584,7 @@ static int parse_issuer_auth(struct cbor *c, struct ultrawidelock_stepup_doc *do
 	/* Best-effort protected-header decode: record COSE alg (label 1, -7 = ES256)
 	 * when the content is a map with an integer at that label. Never affects
 	 * acceptance. */
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 	{
 		struct cbor ph = {doc->protected_hdr, doc->protected_hdr + doc->protected_len};
 		uint64_t np;
@@ -602,6 +611,7 @@ static int parse_issuer_auth(struct cbor *c, struct ultrawidelock_stepup_doc *do
 			}
 		}
 	}
+#endif
 
 	uint64_t nu;
 
@@ -618,6 +628,7 @@ static int parse_issuer_auth(struct cbor *c, struct ultrawidelock_stepup_doc *do
 			if (cb_bstr(c, &doc->kid, &doc->kid_len) != 0) {
 				return -1;
 			}
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 		} else if (label == 33) { /* x5chain: record the raw value item bytes */
 			const uint8_t *start = c->p;
 
@@ -643,6 +654,7 @@ static int parse_issuer_auth(struct cbor *c, struct ultrawidelock_stepup_doc *do
 					doc->x5_cert_len = (size_t)arg;
 				}
 			}
+#endif /* on a lean build an x5chain (label 33) is skipped like any other label */
 		} else if (cb_skip(c) != 0) {
 			return -1;
 		}

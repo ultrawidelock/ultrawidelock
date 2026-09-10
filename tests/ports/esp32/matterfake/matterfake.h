@@ -856,6 +856,16 @@ extern int mfk_remove_trust_rc;
 extern int mfk_remove_user_calls;
 extern uint16_t mfk_remove_user_index;
 extern int mfk_remove_user_rc;
+/* The issuer-key mirror (SetCredential type 6) and the learned-key listener. */
+extern int mfk_add_issuer_calls;
+extern uint8_t mfk_add_issuer_key[65];
+extern uint16_t mfk_add_issuer_index;
+extern uint16_t mfk_add_issuer_user;
+extern int mfk_add_issuer_rc;
+extern int mfk_remove_issuer_calls;
+extern uint16_t mfk_remove_issuer_index;
+extern int mfk_remove_issuer_rc;
+extern void (*mfk_learned_listener)(uint8_t, uint16_t, uint16_t, const uint8_t *);
 extern int mfk_prov_clear_calls;
 extern int mfk_refresh_adv_calls;
 extern int mfk_ble_time_updated_calls;

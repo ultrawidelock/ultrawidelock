@@ -140,25 +140,35 @@ blk_reader() {
 	echo
 	echo "== host: ultrawidelock_reader engine walk-up (scripted phone) =="
 	RBIN="$(mktemp -t ultrawidelock_reader.XXXXXX)"
+	# The step-up phase is built in (CONFIG_ULTRAWIDELOCK_CRED_STEPUP): section G walks
+	# an unknown credential through the Access Document it is learned from. The
+	# first build also carries the bench one-shot (the ESP32 shape), the second
+	# only the learn path (the DWM3001CDK shape).
 	cc -std=c11 -O1 -Wall -Wextra \
 		-Wno-unused-variable -Wno-unused-function \
 		-D_POSIX_C_SOURCE=200809L -DULTRAWIDELOCK_PORT_HOST \
-		-DCONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST=1 \
+		-DCONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST=1 -DCONFIG_ULTRAWIDELOCK_CRED_STEPUP=1 \
+		-DCONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH=1 \
 		-I "$CRED/include" -I "$CRED/src" -I "$ULTRAWIDELOCK_PORT_INC" \
 		"$HERE/test_ultrawidelock_reader.c" \
 		"$CRED/src/ultrawidelock_reader.c" "$CRED/src/ultrawidelock_apdu.c" \
 		"$CRED/src/ultrawidelock_crypto.c" "$CRED/src/ultrawidelock_hash.c" \
-		"$CRED/src/ultrawidelock_prov.c" \
+		"$CRED/src/ultrawidelock_prov.c" "$CRED/src/ultrawidelock_stepup.c" \
+		"$CRED/src/ultrawidelock_stepup_wire.c" "$CRED/src/ultrawidelock_stepup_parse.c" \
+		"$CRED/src/ultrawidelock_tlv.c" \
 		"$HERE/ultrawidelock_prim_host.c" "$ROOT/tests/host/port/osal_host.c" -o "$RBIN"
 	"$RBIN"
 	cc -std=c11 -O1 -Wall -Wextra \
 		-Wno-unused-variable -Wno-unused-function \
 		-D_POSIX_C_SOURCE=200809L -DULTRAWIDELOCK_PORT_HOST \
+		-DCONFIG_ULTRAWIDELOCK_CRED_STEPUP=1 \
 		-I "$CRED/include" -I "$CRED/src" -I "$ULTRAWIDELOCK_PORT_INC" \
 		"$HERE/test_ultrawidelock_reader.c" \
 		"$CRED/src/ultrawidelock_reader.c" "$CRED/src/ultrawidelock_apdu.c" \
 		"$CRED/src/ultrawidelock_crypto.c" "$CRED/src/ultrawidelock_hash.c" \
-		"$CRED/src/ultrawidelock_prov.c" \
+		"$CRED/src/ultrawidelock_prov.c" "$CRED/src/ultrawidelock_stepup.c" \
+		"$CRED/src/ultrawidelock_stepup_wire.c" "$CRED/src/ultrawidelock_stepup_parse.c" \
+		"$CRED/src/ultrawidelock_tlv.c" \
 		"$HERE/ultrawidelock_prim_host.c" "$ROOT/tests/host/port/osal_host.c" -o "$RBIN"
 	"$RBIN"
 	rm -f "$RBIN"

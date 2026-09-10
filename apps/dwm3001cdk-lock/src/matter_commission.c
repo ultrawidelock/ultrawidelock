@@ -3096,13 +3096,34 @@ static void on_subscribe_request(const struct matter_exchange_in *in)
  */
 BUILD_ASSERT(MATTER_ALIRO_ENDPOINT_KEYS_SUPPORTED == ULTRAWIDELOCK_TRUST_MAX,
 	     "reported endpoint-key cap must equal the trust store it describes");
+BUILD_ASSERT(MATTER_ALIRO_ISSUER_KEYS_SUPPORTED == ULTRAWIDELOCK_ISSUER_MAX,
+	     "reported issuer-key cap must equal the issuer store it describes");
+BUILD_ASSERT(MATTER_DL_CRED_ALIRO_ISSUER_KEY == ULTRAWIDELOCK_CRED_TYPE_ALIRO_ISSUER &&
+		     MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT == ULTRAWIDELOCK_CRED_TYPE_ALIRO_EVICTABLE,
+	     "the cluster and the store must file keys under the same credential types");
 
 static int on_ultrawidelock_credential(uint8_t credential_type, const uint8_t public_key[65],
 			       uint16_t credential_index, uint16_t user_index)
 {
 	if (credential_type == MATTER_DL_CRED_ALIRO_ISSUER_KEY) {
-		LOG_INF("  CREDENTIAL issuer key accepted, NOT an anchor (type %u)",
-			(unsigned int)credential_type);
+		/*
+		 * Not an anchor -- no phone presents it -- but kept: it is the key
+		 * the step-up Access Document is signed under, and the only way a
+		 * device the hub never sent a SetCredential for (an Apple Watch on
+		 * the owner's Apple ID, in every field log so far) can be admitted
+		 * without a bench command. Refusing it once the store is full is
+		 * truthful: NumberOfAliroCredentialIssuerKeysSupported is that cap.
+		 */
+		int rc = ultrawidelock_reader_provision_add_issuer(public_key, credential_index,
+								   user_index);
+
+		if (rc < 0) {
+			LOG_ERR("  CREDENTIAL issuer key REFUSED (%d)", rc);
+			return rc;
+		}
+		LOG_INF("  CREDENTIAL issuer key %s (cred idx %u, user idx %u)",
+			rc == 1 ? "already held" : "STORED", (unsigned int)credential_index,
+			(unsigned int)user_index);
 		return 0;
 	}
 
@@ -3122,23 +3143,29 @@ static int on_ultrawidelock_credential(uint8_t credential_type, const uint8_t pu
 /**
  * Matter ClearCredential: stop honouring one credential, or every one of them.
  *
- * An issuer key was never an anchor, so clearing one is already true and says so without touching
- * the store. Everything else resolves through the credential index the SetCredential recorded.
- * Returns 0 only when the removal is persisted, because the cluster turns anything else into a
- * FAILURE the admin can act on.
+ * Clearing an issuer key also revokes every anchor the reader learned from a document it signed.
+ * Everything resolves through the credential index the SetCredential recorded. Returns 0 only
+ * when the removal is persisted, because the cluster turns anything else into a FAILURE the admin
+ * can act on.
  */
 static int on_ultrawidelock_credential_clear(uint8_t credential_type, uint16_t credential_index)
 {
-	if (credential_type == MATTER_DL_CRED_ALIRO_ISSUER_KEY) {
-		LOG_INF("  CREDENTIAL CLEAR issuer key: never an anchor, nothing to revoke");
-		return 0;
+	if (credential_type == MATTER_DL_CRED_ALIRO_ISSUER_KEY &&
+	    credential_index != MATTER_DL_INDEX_ALL) {
+		int rc = ultrawidelock_reader_provision_remove_issuer(credential_index);
+
+		LOG_WRN("  CREDENTIAL CLEAR issuer key index %u -> %s", (unsigned int)credential_index,
+			rc < 0 ? "NOT PERSISTED" : (rc == 1 ? "no such issuer" : "REVOKED"));
+		return rc < 0 ? -1 : 0;
 	}
 	if (credential_index == MATTER_DL_INDEX_ALL) {
 		/* remove_type clears BY TYPE: with a real type only anchors
 		 * carrying it go, so clearing every evictable key leaves the
-		 * non-evictable ones. Type 0 is the cluster's "every type" and is
-		 * wider than that -- it takes every anchor in the store, including
-		 * the ones no Matter index ever named, such as a bench add. */
+		 * non-evictable ones, and clearing every issuer key takes the
+		 * anchors learned under them. Type 0 is the cluster's "every type"
+		 * and is wider than that -- it takes every anchor and issuer in the
+		 * store, including the ones no Matter index ever named, such as a
+		 * bench add. */
 		int rc = ultrawidelock_reader_provision_remove_type(credential_type);
 
 		if (rc < 0) {

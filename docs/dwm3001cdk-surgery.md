@@ -342,6 +342,12 @@ one, are told apart **only by the bytes**. Print the presented key beside every 
 anchor) and **type 7** (evictable endpoint key, stored). A pairing observed 3 calls:
 one type 6, two type 7.
 
+**Refused as an anchor, not as a key (2026-09-10).** The issuer key is now kept in its
+own slots: it is what a device the hub never installed a key for -- an Apple Watch on the
+owner's Apple ID -- proves itself against, through the step-up Access Document (see
+CHANGELOG, "The Watch gets in without `trust`"). No phone ever presents it, so it still
+never matches a walk-up on its own.
+
 **An absence in a capture is evidence about the capture, not about the protocol.**
 Captures showing only type 6 were captures of pairings that never got far enough to send
 type 7: the subscription bug (§3.1) was stopping them.

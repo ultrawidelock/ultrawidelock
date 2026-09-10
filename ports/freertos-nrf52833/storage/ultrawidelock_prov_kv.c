@@ -31,8 +31,8 @@ _Static_assert(ULTRAWIDELOCK_PROV_BLOB_MAX <= ULTRAWIDELOCK_KV_VALUE_MAX,
 	       "the provisioning blob no longer fits one key-value record");
 
 /*
- * STATIC, not on the stack. ULTRAWIDELOCK_PROV_BLOB_MAX is 700 bytes and struct
- * ultrawidelock_trust_store is another 778, which together overrun the port's default
+ * STATIC, not on the stack. ULTRAWIDELOCK_PROV_BLOB_MAX is close to 1 KB and struct
+ * ultrawidelock_trust_store is another 1 KB, which together overrun the port's default
  * 4096-byte task stacks once the reader's own frames are counted. The Zephyr
  * twin learned this as an MPU fault through the bottom of the main stack a few
  * seconds into boot.

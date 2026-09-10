@@ -209,17 +209,30 @@ config ULTRAWIDELOCK_CRED_STEPUP
 	bool "Enable the credential step-up (Access Document) phase"
 	default n
 	help
-	  Reference-completeness build of the credential v1.0 §8.4 step-up phase: after
-	  the standard EXCHANGE, the reader can request an ISO 18013-5 (mdoc) Access
-	  Document from the User Device (ENVELOPE / GET RESPONSE APDUs carrying a
-	  session-encrypted DeviceRequest/DeviceResponse), then parse and verify it
-	  per §7.4 on a background worker.
+	  Build the credential v1.0 §8.4 step-up phase: after the standard EXCHANGE,
+	  the reader can request an ISO 18013-5 (mdoc) Access Document from the User
+	  Device (ENVELOPE / GET RESPONSE APDUs carrying a session-encrypted
+	  DeviceRequest/DeviceResponse) and verify it per §7.4.
 
-	  This is OFF by default and, when on, is armed one-shot from the console
-	  (`ultrawidelock-stepup arm`); it never runs per-unlock. The verification verdict is
-	  logged and stored only -- it NEVER gates the unlock, which the provisioned
-	  trust store alone decides. With this option unset the reader is byte-for-byte
-	  identical to today and the fast-path auth segment is untouched.
+	  Two uses. A presented key no anchor matches, while an issuer key
+	  (SetCredential type 6) is held, is asked for its document on the spot;
+	  only a document a stored issuer signed over that very key learns it as an
+	  evictable anchor, and the unlock waits on that verdict. This is what admits
+	  a device the Matter hub never sends a SetCredential for -- an Apple Watch on
+	  the owner's Apple ID, in every field log so far. Without this option such a
+	  key is rejected at AUTH1, as before.
+
+	  The bench one-shot (`ultrawidelock-stepup arm`, ULTRAWIDELOCK_CRED_STEPUP_BENCH)
+	  is unchanged: it requests a document from an already-trusted phone,
+	  verifies it on the background worker, and only logs the verdict.
+
+config ULTRAWIDELOCK_CRED_STEPUP_BENCH
+	bool "Bench one-shot step-up (ultrawidelock-stepup arm) + its worker task"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	default y
+	help
+	  The console-armed one-shot and the FreeRTOS worker that verifies its
+	  document off the BLE-host task. The learn path does not need either.
 
 config ULTRAWIDELOCK_CRED_ACCESS_LISTENER
 	bool "Expose the access verdict to a registered listener"

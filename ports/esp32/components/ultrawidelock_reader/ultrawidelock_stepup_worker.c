@@ -27,7 +27,7 @@
 #include "ultrawidelock_prim.h" /* ultrawidelock_ecdsa_p256_verify (PSA ES256) */
 #include "ultrawidelock_stepup.h"
 
-#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
 
 static const char *TAG = "ultrawidelock_stepup";
 
@@ -170,4 +170,4 @@ int ultrawidelock_stepup_worker_submit(const struct ultrawidelock_stepup_job *jo
 	return xQueueSend(s_queue, job, 0) == pdTRUE ? 0 : -1;
 }
 
-#endif /* CONFIG_ULTRAWIDELOCK_CRED_STEPUP */
+#endif /* CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH */
