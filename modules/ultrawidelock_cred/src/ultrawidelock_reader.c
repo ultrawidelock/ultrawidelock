@@ -278,7 +278,11 @@ static bool s_stepup_armed;
  * that transaction is simply told no), and the nRF52833 cannot spare a second
  * copy. Owned by a connection handle while it collects; STEPUP_SD_FREE when
  * idle. The bench worker's job copy (2 KiB) is sized to take it whole. */
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_SD_MAX)
+#define STEPUP_SD_MAX  ((unsigned)CONFIG_ULTRAWIDELOCK_CRED_STEPUP_SD_MAX)
+#else
 #define STEPUP_SD_MAX  1536u
+#endif
 #define STEPUP_SD_FREE 0xFFFFu
 static uint8_t s_stepup_sd[STEPUP_SD_MAX];
 static size_t s_stepup_sd_len;

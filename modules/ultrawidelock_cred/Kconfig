@@ -52,7 +52,7 @@ config ULTRAWIDELOCK_CRED_STEPUP
 	  rejected at AUTH1, as before. Costs about 4.5 KiB of static RAM, shared
 	  by every session: the collected document, its decrypted form, and the
 	  parsed document (whose capacity the app may trim with
-	  ULTRAWIDELOCK_STEPUP_MAX_DIGESTS / _ITEMS).
+	  ULTRAWIDELOCK_STEPUP_MAX_DIGESTS / _ITEMS below).
 
 config ULTRAWIDELOCK_CRED_STEPUP_BENCH
 	bool "Bench one-shot step-up (ultrawidelock-stepup arm)"
@@ -63,6 +63,34 @@ config ULTRAWIDELOCK_CRED_STEPUP_BENCH
 	  and logged, never gating access. Needs a console to arm it from and a
 	  port-supplied worker (ultrawidelock_stepup_worker_submit / _last), which
 	  the DWM3001CDK image has neither of, so it stays off there.
+
+config ULTRAWIDELOCK_CRED_STEPUP_SD_MAX
+	int "Step-up DeviceResponse collection buffer (bytes)"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	default 1536
+	help
+	  Static RAM for the one SessionData DeviceResponse the reader collects
+	  across the 61XX chain, shared by every session. A document that outgrows
+	  it is dropped, never verified gapped. The bench worker's job copy must
+	  be at least this large (checked at compile time).
+
+config ULTRAWIDELOCK_STEPUP_MAX_DIGESTS
+	int "Step-up parser: value digests kept per document"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	default 24
+	help
+	  Capacity of the parsed document's digest table (32 bytes each, static
+	  RAM). Digests past it are counted in the verdict, not treated as a parse
+	  error. The spec example carries 3.
+
+config ULTRAWIDELOCK_STEPUP_MAX_ITEMS
+	int "Step-up parser: disclosed items kept per document"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	default 16
+	help
+	  Capacity of the parsed document's item table (static RAM). Items past
+	  it are counted in the verdict, not treated as a parse error. The spec
+	  example carries 1.
 
 config ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE
 	int "Credential housekeeping thread stack size"

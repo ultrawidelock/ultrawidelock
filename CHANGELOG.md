@@ -109,6 +109,12 @@ tag was cut.
   not errors (a real MSO lists more digests than the disclosed items), but
   the parsed document now counts them and flags which fields were cut, and
   the verdict line carries both (`drop=<digests>/<items> tr=<flags>`).
+- **The step-up caps are Kconfig.** The 1,536-byte collection buffer and the
+  parser's digest and item capacities were a `#define` in the reader and two
+  `-D` flags in the CDK's CMakeLists. They are now ints in the module's
+  Kconfig on both ports (`CONFIG_ULTRAWIDELOCK_CRED_STEPUP_SD_MAX`,
+  `CONFIG_ULTRAWIDELOCK_STEPUP_MAX_DIGESTS`, `_MAX_ITEMS`), with the CDK's
+  12 and 8 in its prj.conf. Same values, same images.
 
 ### Fixes for anyone running v0.5.0 on ESP32-S3
 
