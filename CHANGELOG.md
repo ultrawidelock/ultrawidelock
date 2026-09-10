@@ -24,6 +24,13 @@ tag was cut.
   for 20 s: no further CommissioningComplete, no commissioning window open,
   no fail-safe armed. A commissioned lock rebooting starts the reader at
   once, as before.
+- **Every phone tap died with "no reader group key" after a fresh pairing.**
+  Home sends SetAliroReaderConfig right after commissioning, and with the 20 s
+  reader-start delay above that now lands before the reader had initialised its
+  crypto backend: the key derivation failed (`reader group key derivation
+  failed; salt field 1 unavailable`, twice, at ~44 s), nothing retried it, and
+  every credential session was torn down at AUTH0. The derivation now brings
+  the backend up itself, so it succeeds whichever arrives first.
 - **`status` reports internal RAM:** free now, largest single block, and the
   least ever free since boot, so the headroom commissioning leaves is a number
   rather than a guess.

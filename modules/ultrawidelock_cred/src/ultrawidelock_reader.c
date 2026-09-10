@@ -122,7 +122,13 @@ static void compute_reader_group_x(void)
 {
 	uint8_t pub[ULTRAWIDELOCK_P256_POINT];
 
-	if (ultrawidelock_ec_p256_pub_from_priv(s_id.sign_priv, pub) == 0) {
+	/* Runs from whoever mutates s_id. On ESP32 that is the Matter task handling
+	 * SetAliroReaderConfig, which Apple sends right after commissioning, while the
+	 * reader engine (and its crypto init) starts only once the commissioner has
+	 * been quiet for a while. Bring the backend up here so the derivation does not
+	 * depend on that order; init is idempotent. */
+	if (ultrawidelock_crypto_init() == 0 &&
+	    ultrawidelock_ec_p256_pub_from_priv(s_id.sign_priv, pub) == 0) {
 		memcpy(s_reader_group_x, pub + 1, ULTRAWIDELOCK_EC_PUBX_LEN);
 		s_have_group_x = true;
 	} else {
