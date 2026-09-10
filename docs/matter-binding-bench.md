@@ -73,12 +73,13 @@ Two profiles carry the client; for bringup use the first:
 
 | build | client log level | fits by | what it is for |
 |---|---|---|---|
-| `make build CLIENT=1` | DBG | 1,385 B | the bench. Reads back why a bound lock did or did not open. |
+| `make build CLIENT=1` | DBG | 294 B | the bench. Reads back why a bound lock did or did not open. No step-up, so a Watch is not learned on this image. |
 | `make build CLIENT=1 RELEASE=1 SMP=1` | ERR (global level 1) | 8,288 B | what ships. mcumgr, DFU, signed. |
 
 The debug profile fits only because `overlay-client-debug.conf` applies
 automatically to `CLIENT=1` without `RELEASE=1`: it silences the credential, DFU
-and radio log modules and drops the DFU receiver. Read that file before adding
+and radio log modules, drops the DFU receiver and turns off step-up (the Watch's
+Access Document path). Read that file before adding
 to it: setting a log symbol that does not exist aborts the CMake configure.
 
 Neither profile has much room. If either stops linking or signing, that is the

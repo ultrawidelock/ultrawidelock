@@ -459,7 +459,7 @@ static void srp_sign_self_test(void)
 		LOG_ERR("SRP sign self-test: sign FAILED, psa_status=%d", (int)st);
 		return;
 	}
-	LOG_INF("SRP sign self-test: volatile PASS (exported %u B, signature %u B)",
+	LOG_DBG("SRP sign self-test: volatile PASS (exported %u B, signature %u B)",
 		(unsigned int)priv_len, (unsigned int)sig_len);
 
 	/*
@@ -527,7 +527,7 @@ static void srp_sign_self_test(void)
 			return;
 		}
 		st = psa_destroy_key(pkey);
-		LOG_INF("SRP sign self-test: PERSISTENT PASS (pubkey %u B, signature %u B, "
+		LOG_DBG("SRP sign self-test: PERSISTENT PASS (pubkey %u B, signature %u B, "
 			"destroy psa_status=%d)",
 			(unsigned int)pub_len, (unsigned int)sig_len, (int)st);
 	}
