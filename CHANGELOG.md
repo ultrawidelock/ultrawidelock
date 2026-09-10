@@ -10,7 +10,62 @@ tag was cut.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixes for anyone running v0.5.0 on ESP32-S3
+
+- **The image booted only with the update service turned off.** With
+  `CONFIG_ULTRAWIDELOCK_DFU_ESP32=y` (the default) the board crashed in
+  `app_main` before Matter started. The DFU service armed its NimBLE
+  disconnect listener while handing its definition to CHIP, and on ESP-IDF
+  the host's GAP state does not exist until CHIP starts it. The listener is
+  now armed by the first write to the service instead. A host test pins the
+  order.
+- **`range` says how old the distance is.** The console kept printing the
+  last distance a departed peer left behind ("170 cm" for a minute after the
+  phone stopped ranging), which read as ranging having frozen. It now prints
+  `range: 170 cm (61234 ms ago)`. New SDK accessor:
+  `ultrawidelock_uwb_last_range_age_cm()`.
+- **The 30 s session deadline is logged apart from the 5 s phase deadline,
+  with the phase it hit.** Both used to read "credential phase deadline
+  expired". A Watch whose Pre-POLL was accepted and that then never ranged
+  is not a credential failure, and the next field log will say so.
+- **Every ranging session leaves a one-line post-mortem.** At teardown the
+  listener prints `I: ranging post-mortem: prepoll=N arm=N poll_ok=N
+  poll_fail=N resp=N final=N range=N last_st=...`, the count of each step of
+  the DS-TWR round, through the same printer as `Pre-POLL accepted`. Default
+  on, printed off the critical path, no `uwbdiag` needed. SDK:
+  `ccc_shim_rx_stats_get()`.
+
+### Apple Watch, unlock on approach
+
+Two faults, both measured on a DWM3001CDK on 2026-09-10 once the Watch's
+key was trusted, both in the walk-away-and-come-back case that the Watch's
+own ranging policy produces (it suspends ranging once far and restarts it,
+same BLE session, once its wearer is back).
+
+- **The reader dropped a live, ranging session at 30 s.** The connected cap
+  was a hard age cap. The Watch's second approach in a session was ranging
+  at 0 cm when the reader disconnected it for "session deadline expired",
+  and it was back within a second, so the cap freed nothing. From
+  ESTABLISHED on the cap is now an idle cap: every peer message and every
+  accepted range refresh it. A peer quiet on both radios for 30 s is still
+  dropped. SDK: `ultrawidelock_ranging_last_range_age_ms()`.
+- **CDK: the second approach never unlocked.** A departure relock disarms
+  the trajectory gate, which re-arms only on a range at or past
+  `approach_cm`; the Watch restarts ranging already inside it (61 cm,
+  130 cm measured). A ranging restart is now the same approach evidence a
+  new session is, and arms the gate the same way. SDK:
+  `ultrawidelock_uwb_start_generation()`.
+
+### DWM3001CDK
+
+- **`trust` and `prov` can be typed at the RTT terminal.** The Matter image
+  has no shell, so a second device whose endpoint key the Home hub never
+  delivered (an Apple Watch, in every field log so far) was rejected on
+  every approach with no way past it short of the ESP32. `make monitor`
+  feeds its `Terminal>` prompt into RTT down-buffer 0; the main loop now
+  drains it for those two lines, the same two the ESP32 lock answers as
+  `ultrawidelock trust` / `ultrawidelock prov`. Bench only, and `trust`
+  admits whichever credential was presented last.
 
 ## [0.5.0] - 2026-09-09
 

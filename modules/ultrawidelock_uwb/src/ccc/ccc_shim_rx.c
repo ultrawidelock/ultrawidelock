@@ -357,6 +357,9 @@ static uint8_t g_pp_stash[CCC_SP0_STASH_LEN];
 static uint16_t g_pp_stash_len;
 static bool g_pp_pending;
 
+/** @brief The session's step tallies (ccc_shim_rx_stats). Increments only; no SPI, no print. */
+static struct ccc_shim_rx_stats g_stats;
+
 /**
  * @brief Whether THIS anchor answers the block whose POLL is being handled.
  *
@@ -413,6 +416,7 @@ static uint32_t ccc_rx_cur_cand(void)
  */
 void ccc_shim_rx_log_reset(void)
 {
+	memset(&g_stats, 0, sizeof(g_stats));
 	g_rx_arms = 0u;
 	g_have_poll_index = false;
 	g_await_poll = false;
@@ -461,6 +465,11 @@ void ccc_shim_rx_log_reset(void)
  * decode.
  * @return true if awaiting POLL, false otherwise.
  */
+void ccc_shim_rx_stats_get(struct ccc_shim_rx_stats *out)
+{
+	*out = g_stats;
+}
+
 bool ccc_shim_rx_awaiting_poll(void)
 {
 	return g_await_poll;
@@ -638,6 +647,7 @@ static void prepoll_decode(const uint8_t *frame, uint16_t datalength)
 	}
 	g_prepoll_counter = mhr.frame_counter;
 	g_have_prepoll_counter = true;
+	g_stats.prepoll_ok++;
 	g_session_block = pp.ranging_block;
 	g_have_session_block = true;
 	if (g_have_poll_index) {
@@ -717,6 +727,8 @@ static uint64_t ts5_to_u64(const uint8_t t[5])
 static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 {
 	static uint32_t g_fd_logged;
+
+	g_stats.final_data++;
 #if defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
 	g_dbg_fd_calls++;
 #endif
@@ -928,7 +940,10 @@ static void final_data_decode(const uint8_t *frame, uint16_t datalength)
 #else
 			(void)sts_ok;
 #endif
+			{
+				g_stats.range++;
 				fira_session_set_ccc_range_cm(d_mm / 10, fd.ranging_block);
+			}
 
 			/* Consume the per-block capture: the next block must re-stash a
 			 * fresh verdict + interval snapshot, else the gate fails closed. */
@@ -1890,6 +1905,12 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 		 * resp_tx_done clears as soon as the Response TX completes, so a second
 		 * call further down would not agree with the one that made the decision. */
 		ours = ccc_block_is_ours();
+		g_stats.last_poll_st = st;
+		if (cper == 0u && ip != 0u && ours) {
+			g_stats.poll_ok++;
+		} else {
+			g_stats.poll_fail++;
+		}
 		/* Time-critical FIRST: arm Response_0's delayed TX before the stsq read and
 		 * ultrawidelock_printf. cper=0 => real POLL, so delayed-TX Response_0 (index+1); else return
 		 * to the SP0 listen.
@@ -1906,6 +1927,9 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 			g_poll_ip_for_final = ip; /* round anchor for the Final RX arm (TXDONE) */
 			g_t_poll_rx = ip40;       /* t2: responder POLL RX */
 			tr = tx_response_sp3(ip, g_armed_index + 1u + ULTRAWIDELOCK_RESPONDER_INDEX);
+			if (tr == 0) {
+				g_stats.resp_tx++;
+			}
 #if defined(ESP_PLATFORM)
 			/* ESP32: the TX-done callback (resp_tx_done) dispatches too late and too
 			 * jittery (~2-16 ms) to arm the Final RFRAME, which sits only ~2 ms after
@@ -1983,6 +2007,7 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 		 * index; mark it before arming so a re-detected Pre-POLL can't re-arm late. */
 		g_armed_index = g_warm_index;
 		if (arm_poll_sp3(ip) == 0) {
+			g_stats.poll_arm++;
 			g_await_poll = true; /* SP3 armed; do not re-arm SP0 */
 		} else {
 			dwt_setrxtimeout(0u);
@@ -2131,6 +2156,20 @@ int ccc_prepoll_listen(uint8_t channel, uint8_t preamble_code)
  * this is ever called from an ISR or a coop thread at prio <= -11. */
 void ccc_prepoll_stop(void)
 {
+	/* One line per session that got as far as the air, through the facade
+	 * printer like the acceptance line, so a default-level field log shows
+	 * which step of the round never happened. Zeroed after printing: the
+	 * next ultrawidelock_ranging_start() stops the listener again before it
+	 * starts, and that second stop must not print a second time. */
+	if (g_stats.prepoll_ok != 0u || g_stats.poll_arm != 0u) {
+		ultrawidelock_printf("I: ranging post-mortem: prepoll=%u arm=%u poll_ok=%u "
+				     "poll_fail=%u resp=%u final=%u range=%u last_st=%08x\n",
+				     (unsigned)g_stats.prepoll_ok, (unsigned)g_stats.poll_arm,
+				     (unsigned)g_stats.poll_ok, (unsigned)g_stats.poll_fail,
+				     (unsigned)g_stats.resp_tx, (unsigned)g_stats.final_data,
+				     (unsigned)g_stats.range, (unsigned)g_stats.last_poll_st);
+		memset(&g_stats, 0, sizeof(g_stats));
+	}
 	/* Per-session PHY freshness: drop the cache on every stop so the next
 	 * session's dwt_configure (and its RX calibration) runs exactly once, at
 	 * prewarm time, never on the M4 critical path. RAM-only, so it is safe

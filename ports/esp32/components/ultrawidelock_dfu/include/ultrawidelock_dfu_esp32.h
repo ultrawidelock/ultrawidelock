@@ -59,8 +59,10 @@ struct ble_gatt_svc_def;
  * The returned pointer is one element, not a null-terminated table: CHIP copies
  * it by value and supplies its own terminator.
  *
- * Registers the disconnect listener as a side effect, so a transfer is dropped
- * when its peer goes away regardless of who owns the host.
+ * Touches nothing in the host: CHIP has not started it yet, and on ESP-IDF its
+ * GAP state is not even allocated until it does. The disconnect listener that
+ * drops a half-received transfer when its peer goes away is armed from the
+ * service's first GATT write instead, on the started host's own task.
  */
 const struct ble_gatt_svc_def *ultrawidelock_dfu_esp32_service_def(void);
 

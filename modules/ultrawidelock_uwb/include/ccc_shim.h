@@ -69,6 +69,24 @@ void ccc_shim_rx_try_prepoll(uint16_t datalength);
 /** True while an SP3 POLL RX is armed (the next RX-good event is its result). Target only. */
 bool ccc_shim_rx_awaiting_poll(void);
 
+/**
+ * Per-session ranging tallies, one per step of the DS-TWR round. Reset with
+ * ccc_shim_rx_log_reset() at listen start and printed, then zeroed, by
+ * ccc_prepoll_stop(), so a session that accepted a Pre-POLL and never latched a
+ * range says which step it died at without the per-frame trace on.
+ */
+struct ccc_shim_rx_stats {
+	uint32_t prepoll_ok;  /* Pre-POLLs accepted (MIC + context + replay checks) */
+	uint32_t poll_arm;    /* SP3 POLL windows armed off a warm STS */
+	uint32_t poll_ok;     /* POLLs received with a good STS in our block */
+	uint32_t poll_fail;   /* POLL windows that closed without one (CPER / timeout) */
+	uint32_t resp_tx;     /* Response_0 delayed TXs armed */
+	uint32_t final_data;  /* Final_Data frames decoded */
+	uint32_t range;       /* ranges latched into fira_session */
+	uint32_t last_poll_st; /* raw DW3000 status of the last POLL window result */
+};
+void ccc_shim_rx_stats_get(struct ccc_shim_rx_stats *out);
+
 /** True while the responder still owes the current ranging block a radio event: an armed POLL RX
  * (a few slots out) or an armed Final RX (~2 ms out). Sample it AFTER chaining to the blob's RX
  * handler and it names the reception just serviced: only the Final leaves it false, with the

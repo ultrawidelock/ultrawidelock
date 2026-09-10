@@ -82,6 +82,19 @@ static int dfu_gatt_access(uint16_t conn_handle, uint16_t attr_handle,
 	if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
 		return BLE_ATT_ERR_UNLIKELY;
 	}
+	/* The disconnect cleanup is armed HERE, on the first write, and not
+	 * where the service definition is handed out. ESP-IDF's NimBLE keeps
+	 * the listener list in ble_gap_vars, which ble_gap_init() allocates
+	 * (BLE_STATIC_TO_DYNAMIC, default y); CHIP runs that inside
+	 * esp_matter::start(), AFTER app_main has collected the service defs.
+	 * Registering from service_def() therefore dereferenced NULL and the
+	 * lock crashed on boot with the update service enabled. An access
+	 * callback runs on the host task of a started host by construction,
+	 * and a transfer cannot exist before its first frame. */
+	if (!s_registered) {
+		(void)ble_gap_event_listener_register(&s_gap_listener, dfu_gap_event, NULL);
+		s_registered = true;
+	}
 	if (ble_hs_mbuf_to_flat(ctxt->om, frame, sizeof(frame), &len) != 0) {
 		/* Longer than one frame can be. The protocol never produces one,
 		 * so this is a peer sending something else. */
@@ -148,13 +161,9 @@ static const struct ble_gatt_svc_def k_gatt_svcs[] = {
 
 const struct ble_gatt_svc_def *ultrawidelock_dfu_esp32_service_def(void)
 {
-	/* The GAP listener is not part of the table and does not depend on the
-	 * host having started, so it can be armed here -- which means a caller
-	 * that hands the def to CHIP still gets the disconnect cleanup. */
-	if (!s_registered) {
-		(void)ble_gap_event_listener_register(&s_gap_listener, dfu_gap_event, NULL);
-		s_registered = true;
-	}
+	/* Nothing touches the host here: it has not been started yet, and on
+	 * ESP-IDF its GAP state does not even exist yet (see dfu_gatt_access,
+	 * where the disconnect listener is armed instead). */
 	/* Element [0] only. CHIP copies one struct and supplies its own
 	 * terminator; handing it a table with our {0} inside would put a null
 	 * entry in the middle of its list. */

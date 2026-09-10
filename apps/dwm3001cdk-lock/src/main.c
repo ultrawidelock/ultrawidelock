@@ -25,6 +25,8 @@
 #include "ultrawidelock_prov.h" /* ultrawidelock_prov_erase, for the factory-reset button */
 #include <ultrawidelock/reader.h>
 #include <ultrawidelock/uwb.h>
+
+#include "rtt_bench.h" /* `trust` / `prov` typed at the RTT terminal */
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
 #include "matter_client.h"
@@ -815,6 +817,8 @@ int main(void)
 	/* Rising-edge detector for the credential session, which is what arms the
 	 * trajectory gate. See ultrawidelock_approach_session_up(). */
 	bool session_was_up = false;
+	/* And the same edge for a ranging RESTART inside one session; see below. */
+	uint32_t last_start_gen = ultrawidelock_uwb_start_generation();
 
 	while (1) {
 		int64_t now = k_uptime_get();
@@ -827,6 +831,7 @@ int main(void)
 #endif
 
 		ultrawidelock_reader_status_tick(now);
+		rtt_bench_poll();
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP)
 		/*
 		 * BENCH ONLY, and it prints the Thread network key. The other
@@ -1013,6 +1018,26 @@ int main(void)
 			 * already at the door, so a 180 cm range never arrives.
 			 */
 			ultrawidelock_approach_session_up(&approach);
+		}
+		/*
+		 * The Watch keeps its BLE session across a walk-away: it suspends
+		 * ranging once far and starts it again, new STS, same session id,
+		 * once its own proximity logic says the wearer is back. MEASURED
+		 * 2026-09-10: relock at 280 cm, restart, then 61, 2, 0 cm -- and
+		 * no unlock, because the departure relock had disarmed the
+		 * trajectory gate and nothing at or past approach_cm ever arrived
+		 * to re-arm it; the far half of that approach happened while the
+		 * Watch was not ranging at all. A restart is the same evidence a
+		 * new session is: the peer decided the wearer approached. Arm on
+		 * it the same way.
+		 */
+		{
+			uint32_t start_gen = ultrawidelock_uwb_start_generation();
+
+			if (start_gen != last_start_gen) {
+				last_start_gen = start_gen;
+				ultrawidelock_approach_session_up(&approach);
+			}
 		}
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_INSIDE_LATCH)
 		/*

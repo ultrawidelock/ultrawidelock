@@ -48,6 +48,20 @@ cc -std=c11 -O1 -Wall -Wextra \
 rm -f "$EBIN"
 
 echo
+echo "== host: DFU GATT service vs NimBLE fakes =="
+# dfu_ble_esp32.c compiled unmodified; the receiver is stubbed in the test.
+# Guards the listener-registration ORDER the target cannot check for itself.
+DFUBIN="$(mktemp -t esp_dfu_ble.XXXXXX)"
+cc -std=c11 -O1 -Wall -Wextra \
+   -I "$SDKFAKE" -I "$ESP_COMPONENTS/ultrawidelock_dfu/include" \
+   -I "$REPO_ROOT/modules/ultrawidelock_dfu/include" \
+   "$HERE/test_esp_dfu_ble.c" \
+   "$ESP_COMPONENTS/ultrawidelock_dfu/dfu_ble_esp32.c" \
+   "$SDKFAKE/fake_nimble.c" -o "$DFUBIN"
+"$DFUBIN"
+rm -f "$DFUBIN"
+
+echo
 echo "== host: ultrawidelock_prov NVS backend vs in-RAM NVS fake =="
 NBIN="$(mktemp -t esp_prov_nvs.XXXXXX)"
 cc -std=c11 -O1 -Wall -Wextra \

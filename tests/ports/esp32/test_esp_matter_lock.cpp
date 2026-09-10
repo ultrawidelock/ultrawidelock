@@ -1210,7 +1210,8 @@ static void section_shell(void)
 	ultrawidelock_reader_task_handle = saved;
 	mfk_attr_lockstate_null = 0;
 
-	okc("range with a latched distance", run_cmd("range", 1) == 0);
+	mfk_last_age_ms = 42000;
+	okc("range with a latched distance and its age", run_cmd("range", 1) == 0);
 	mfk_last_have = 0;
 	okc("range before any distance", run_cmd("range", 1) == 0);
 

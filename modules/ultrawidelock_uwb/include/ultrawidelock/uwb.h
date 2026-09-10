@@ -88,6 +88,14 @@ bool ultrawidelock_uwb_trusted_range_cm(int32_t *cm_out);
 bool ultrawidelock_uwb_trusted_range_age_cm(int32_t *cm_out, int64_t *age_ms_out);
 
 /**
+ * As ultrawidelock_uwb_last_range_cm(), plus how long ago that range landed. The
+ * store keeps the last distance until the next session clears it, so a bench
+ * reading it without the age cannot tell a live range from one left behind by
+ * a peer that stopped ranging a minute ago.
+ */
+bool ultrawidelock_uwb_last_range_age_cm(int32_t *cm_out, int64_t *age_ms_out);
+
+/**
  * A trusted range AND the initiator's ranging block it was measured in, from
  * ONE latch.
  *
@@ -121,6 +129,12 @@ uint32_t ultrawidelock_uwb_session_id(void);
 
 /** Monotonic accepted-range epoch for post-challenge freshness checkpoints. */
 uint32_t ultrawidelock_uwb_range_generation(void);
+
+/** Counts successful ultrawidelock_uwb_start_cred() calls. A peer that suspends
+ *  ranging and starts it again inside one BLE session (the Watch does, once
+ *  it has walked away and come back) keeps its session id, so this is the
+ *  only epoch that says "the peer began ranging again". */
+uint32_t ultrawidelock_uwb_start_generation(void);
 
 /** Trusted distance only when its accepted-range epoch is newer than @p after.
  *  This is the demand-driven presence seam: an old latch can never satisfy a

@@ -46,6 +46,13 @@ uint8_t fake_gap_terminate_reason;
 struct ble_npl_event *fake_eventq[16];
 int fake_eventq_count;
 struct ble_npl_callout *fake_last_callout;
+int fake_host_inited;
+int fake_gap_listener_early;
+struct ble_gap_event_listener *fake_gap_listener;
+int fake_gatts_notify_calls;
+uint16_t fake_gatts_notify_handle;
+uint8_t fake_gatts_notify_data[64];
+uint16_t fake_gatts_notify_len;
 
 int fake_l2cap_create_server_rc;
 uint16_t fake_l2cap_server_psm, fake_l2cap_server_mtu;
@@ -109,6 +116,13 @@ void fake_nimble_reset(void)
 	memset(fake_eventq, 0, sizeof(fake_eventq));
 	fake_eventq_count = 0;
 	fake_last_callout = NULL;
+	fake_host_inited = 0;
+	fake_gap_listener_early = 0;
+	fake_gap_listener = NULL;
+	fake_gatts_notify_calls = 0;
+	fake_gatts_notify_handle = 0;
+	memset(fake_gatts_notify_data, 0, sizeof(fake_gatts_notify_data));
+	fake_gatts_notify_len = 0;
 	fake_l2cap_create_server_rc = 0;
 	fake_l2cap_server_psm = 0;
 	fake_l2cap_server_mtu = 0;
@@ -217,6 +231,40 @@ int ble_gatts_add_svcs(const struct ble_gatt_svc_def *svcs)
 }
 
 /* ---- GAP ---- */
+
+int ble_gatts_notify_custom(uint16_t conn_handle, uint16_t chr_val_handle, struct os_mbuf *om)
+{
+	(void)conn_handle;
+	fake_gatts_notify_calls++;
+	fake_gatts_notify_handle = chr_val_handle;
+	fake_gatts_notify_len = om->len < sizeof(fake_gatts_notify_data) ? om->len
+								       : sizeof(fake_gatts_notify_data);
+	memcpy(fake_gatts_notify_data, om->data, fake_gatts_notify_len);
+	om->freed = 1; /* NimBLE consumes the mbuf either way */
+	return 0;
+}
+
+struct os_mbuf *ble_hs_mbuf_from_flat(const void *buf, uint16_t len)
+{
+	struct os_mbuf *om = os_mbuf_get_pkthdr(NULL, 0);
+
+	if (om == NULL || os_mbuf_append(om, buf, len) != 0) {
+		return NULL;
+	}
+	return om;
+}
+
+int ble_gap_event_listener_register(struct ble_gap_event_listener *listener,
+				    ble_gap_event_fn fn, void *arg)
+{
+	if (!fake_host_inited) {
+		fake_gap_listener_early++;
+	}
+	listener->fn = fn;
+	listener->arg = arg;
+	fake_gap_listener = listener;
+	return 0;
+}
 
 int ble_gap_adv_set_fields(const struct ble_hs_adv_fields *fields)
 {
@@ -432,6 +480,9 @@ const char *ble_svc_gap_device_name(void)
 
 esp_err_t nimble_port_init(void)
 {
+	if (fake_nimble_port_init_rc == ESP_OK) {
+		fake_host_inited = 1;
+	}
 	return fake_nimble_port_init_rc;
 }
 
