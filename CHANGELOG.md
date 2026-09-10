@@ -35,6 +35,17 @@ tag was cut.
   on, printed off the critical path, no `uwbdiag` needed. SDK:
   `ccc_shim_rx_stats_get()`.
 
+### DWM3001CDK
+
+- **`trust` and `prov` can be typed at the RTT terminal.** The Matter image
+  has no shell, so a second device whose endpoint key the Home hub never
+  delivered (an Apple Watch, in every field log so far) was rejected on
+  every approach with no way past it short of the ESP32. `make monitor`
+  feeds its `Terminal>` prompt into RTT down-buffer 0; the main loop now
+  drains it for those two lines, the same two the ESP32 lock answers as
+  `ultrawidelock trust` / `ultrawidelock prov`. Bench only, and `trust`
+  admits whichever credential was presented last.
+
 ## [0.5.0] - 2026-09-09
 
 The lock stops drawing current when nobody is at the door. The DW3110 never

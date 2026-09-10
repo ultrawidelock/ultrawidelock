@@ -112,6 +112,10 @@ endif()
 # apart so the next edit here cannot repeat it.
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_PROV_CONSOLE app PRIVATE src/prov_shell.c)
 
+# Bench commands typed at the RTT terminal (`trust`, `prov`): the only input
+# this image has, since the USB console above is off in the Matter build.
+target_sources(app PRIVATE src/rtt_bench.c)
+
 # The side gate's bench feed: an RTT buffer drained by host tooling.
 target_sources_ifdef(CONFIG_ULTRAWIDELOCK_SIDE_GATE app PRIVATE src/side_feed.c)
 # The deployed witness transport. Separate from SIDE_GATE's bench feed: this

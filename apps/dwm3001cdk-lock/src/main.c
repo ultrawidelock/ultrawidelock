@@ -25,6 +25,8 @@
 #include "ultrawidelock_prov.h" /* ultrawidelock_prov_erase, for the factory-reset button */
 #include <ultrawidelock/reader.h>
 #include <ultrawidelock/uwb.h>
+
+#include "rtt_bench.h" /* `trust` / `prov` typed at the RTT terminal */
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_BLE)
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_MATTER_CLIENT)
 #include "matter_client.h"
@@ -827,6 +829,7 @@ int main(void)
 #endif
 
 		ultrawidelock_reader_status_tick(now);
+		rtt_bench_poll();
 #if IS_ENABLED(CONFIG_ULTRAWIDELOCK_THREAD_DATASET_DUMP)
 		/*
 		 * BENCH ONLY, and it prints the Thread network key. The other
