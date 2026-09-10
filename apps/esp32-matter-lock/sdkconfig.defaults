@@ -164,6 +164,39 @@ CONFIG_ULTRAWIDELOCK_CRED_HOUSEKEEPING_STACK_SIZE=6144
 CONFIG_ULTRAWIDELOCK_NUM_RESPONDERS=2
 CONFIG_ULTRAWIDELOCK_RESPONDER_INDEX=0
 
+# --- internal RAM --------------------------------------------------------------
+#
+# A commissioned lock with the credential reader up was left with ~7 KiB of
+# internal heap (`status`: 7164 B free, 3584 B largest, 108 B min ever). Matter
+# needs a ~1.5 KiB packet buffer per reply and several KiB per CASE handshake,
+# so every hub poll died with "PacketBuffer: pool EMPTY", lwIP ERR_MEM
+# (0x3000001) and "esp-aes: Failed to allocate memory", and Home showed the lock
+# as not responding while phone taps kept working. Stock Matter devices get
+# their RAM back by dropping BLE after commissioning; this lock cannot
+# (USE_BLE_ONLY_FOR_COMMISSIONING=n above), so the room has to come from code
+# that does not need to live in IRAM.
+#
+# On the ESP32-S3 the IRAM the linker hands to code is reserved out of the
+# DIRAM pool, and DIRAM is ordinary malloc'able heap, so every byte of code
+# moved to flash comes back as heap. sdkconfig.defaults.hamqtt measured the
+# Wi-Fi pair below on this board: 7135 B -> 28240 B free. The cost is Wi-Fi
+# throughput, and a lock's Matter traffic is a few hundred bytes a second.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+
+# Static RX buffers are ~1.6 KiB each and held for the life of the driver; ten
+# is 16 KiB that never comes back. Kconfig allows 2 to 25.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+
+# Non-ISR heap, ring-buffer and FreeRTOS functions out of IRAM: 5.9 KiB, 4.0 KiB
+# and up to 8 KiB (door_lock.map and the IDF help text). Safe here because no
+# interrupt handler in this app or the credential module is IRAM-resident
+# (no IRAM_ATTR, no *_ISR_IN_IRAM), so nothing calls them with the cache off;
+# the ISR variants of each stay in IRAM for the Wi-Fi and BLE controllers.
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+
 # ---- over-the-air updates, over Bluetooth --------------------------------
 #
 # The ESP32 side of https://ultrawidelock.com/flash/index.html. Adds a GATT
