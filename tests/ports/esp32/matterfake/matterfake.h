@@ -799,6 +799,7 @@ struct mfk_wake_step {
 	int32_t cm;         /* ... with this distance */
 	int64_t advance_ms; /* esp_timer clock advance applied at the wake */
 	int session;        /* ultrawidelock_reader_session_active() from this wake on */
+	int start_bump;     /* mfk_uwb_start_generation += this at the wake (a ranging restart) */
 };
 #define MFK_WAKE_MAX 64
 extern struct mfk_wake_step mfk_wake_script[MFK_WAKE_MAX];
@@ -831,6 +832,8 @@ extern int mfk_ble_prepare_null; /* nonzero -> ultrawidelock_reader_ble_prepare 
 extern int mfk_notify_unlock_calls;
 /* ultrawidelock_reader_session_active(): the approach controller's presence signal. */
 extern int mfk_session_active;
+/* ultrawidelock_uwb_start_generation(): counts ranging (re)starts; settable. */
+extern uint32_t mfk_uwb_start_generation;
 extern int mfk_notify_unlock_last;
 extern int mfk_auth_cred_have;
 extern uint8_t mfk_auth_cred[65];
