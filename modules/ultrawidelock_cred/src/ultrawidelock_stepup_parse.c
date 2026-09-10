@@ -700,9 +700,10 @@ static int parse_issuer_auth(struct cbor *c, struct ultrawidelock_stepup_doc *do
 /**
  * Parse one mdoc item from an issuer-signed namespace: unwraps CBOR tag 24 and reads elementID (key
  * "3") and digestID (key "1"). Returns 0 on success, -1 on parse error. Stores the full tagged
- * bytes and extracted fields in the output struct.
+ * bytes and extracted fields in the output struct; an elementID cut to fit sets
+ * ULTRAWIDELOCK_STEPUP_TRUNC_ELEM_ID in *truncated.
  */
-static int parse_one_item(struct cbor *c, struct ultrawidelock_stepup_item *it)
+static int parse_one_item(struct cbor *c, struct ultrawidelock_stepup_item *it, uint8_t *truncated)
 {
 	const uint8_t *start = c->p;
 	uint64_t tag;
@@ -740,7 +741,9 @@ static int parse_one_item(struct cbor *c, struct ultrawidelock_stepup_item *it)
 			if (cb_tstr(&ic, &s, &sl) != 0) {
 				return -1;
 			}
-			str_copy(it->elem_id, sizeof(it->elem_id), s, sl);
+			if (str_copy(it->elem_id, sizeof(it->elem_id), s, sl)) {
+				*truncated |= ULTRAWIDELOCK_STEPUP_TRUNC_ELEM_ID;
+			}
 		} else if (key_is(k, kl, '4')) { /* elementValue: keep the raw item */
 			const uint8_t *vstart = ic.p;
 
@@ -782,7 +785,7 @@ static int parse_name_spaces(struct cbor *c, struct ultrawidelock_stepup_doc *do
 		}
 		for (uint64_t j = 0; j < nit; j++) {
 			if (doc->n_items < ULTRAWIDELOCK_STEPUP_MAX_ITEMS) {
-				if (parse_one_item(c, &doc->items[doc->n_items]) != 0) {
+				if (parse_one_item(c, &doc->items[doc->n_items], &doc->truncated) != 0) {
 					return -1;
 				}
 				doc->n_items++;

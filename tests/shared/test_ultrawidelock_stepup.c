@@ -738,6 +738,28 @@ static void t_parse_malformed(void)
 		    ultrawidelock_stepup_verify(&doc, &ctx, &v) < 0 && v.reject_step == 4 &&
 			    (v.truncated & ULTRAWIDELOCK_STEPUP_TRUNC_DOC_TYPE) != 0);
 	}
+
+	/* An elementIdentifier longer than the field is cut and flagged like the
+	 * document-level strings: one item, "3" of 33 characters. */
+	{
+		static const uint8_t hdr[] = {0xa1, 0x61, 0x32, 0x81, 0xa1, 0x61, 0x31,
+					      0xa1, 0x61, 0x31, 0xa1, 0x61, 0x6e, 0x81};
+		static const uint8_t item_hd[] = {0xd8, 0x18, 0x58, 0x26, 0xa1,
+						  0x61, 0x33, 0x78, 0x21};
+		uint8_t b[80];
+		size_t n = sizeof(hdr);
+
+		memcpy(b, hdr, n);
+		memcpy(b + n, item_hd, sizeof(item_hd));
+		n += sizeof(item_hd);
+		memset(b + n, 'e', 33);
+		n += 33;
+		chk("33-char elem_id parses",
+		    ultrawidelock_stepup_parse_response(b, n, &doc) == 0 && doc.n_items == 1);
+		chk_eq("33-char elem_id kept 31", (long)strlen(doc.items[0].elem_id), 31);
+		chk("33-char elem_id flagged",
+		    (doc.truncated & ULTRAWIDELOCK_STEPUP_TRUNC_ELEM_ID) != 0);
+	}
 }
 
 /* ---- writer/APDU/SessionData edges + verifier seams ----------------------- */

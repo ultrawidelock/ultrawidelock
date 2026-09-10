@@ -176,6 +176,7 @@ int ultrawidelock_stepup_build_get_response(uint8_t le, uint8_t *out, size_t cap
 #define ULTRAWIDELOCK_STEPUP_TRUNC_NAME_SPACE   0x04u
 #define ULTRAWIDELOCK_STEPUP_TRUNC_DIGEST_ALG   0x08u
 #define ULTRAWIDELOCK_STEPUP_TRUNC_VERSION      0x10u
+#define ULTRAWIDELOCK_STEPUP_TRUNC_ELEM_ID      0x20u /* any item's elementIdentifier */
 
 /**
  * Step-up credential element digest: SHA-256 hash of a disclosed IssuerSignedItem, with its
