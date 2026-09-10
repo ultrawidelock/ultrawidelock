@@ -358,6 +358,11 @@ static void ultrawidelock_reader_task(void *arg)
 
 	bool present = false;
 	bool granted = false;
+	// Rising-edge detector for the credential session, which arms the trajectory
+	// gate (ultrawidelock_approach_session_up()), and the same edge for a ranging
+	// RESTART inside one session; both below.
+	bool session_was_up = false;
+	uint32_t last_start_gen = ultrawidelock_uwb_start_generation();
 
 	while (true) {
 		// >0 = at least one range block latched since the last wake (peer is
@@ -370,6 +375,37 @@ static void ultrawidelock_reader_task(void *arg)
 		// supersede it. Free on every other pass: nothing is armed unless a relock
 		// went undelivered, which needs the peer to have vanished mid-notification.
 		ultrawidelock_reader_status_tick(now);
+
+		// A session cannot come up without the phone approaching: with the BLE
+		// RSSI power gate, ranging is held off until the connection crosses its
+		// open threshold, so UWB starts with the phone already at the door and
+		// the 180 cm range approach_cm asks for never arrives. This edge is that
+		// approach evidence, the same way apps/dwm3001cdk-lock/src/main.c takes it.
+		const bool session_now = ultrawidelock_reader_session_active();
+		if (session_now && !session_was_up) {
+			ultrawidelock_approach_session_up(&approach);
+		}
+		session_was_up = session_now;
+		// The Watch keeps its BLE session across a walk-away: it suspends
+		// ranging once far and starts it again, new STS, same session id, once
+		// its own proximity logic says the wearer is back. MEASURED on the CDK
+		// 2026-09-10: relock at 280 cm, restart, then 61, 2, 0 cm -- and no
+		// unlock, because the departure relock had disarmed the trajectory gate
+		// and nothing at or past approach_cm ever arrived to re-arm it; the far
+		// half of that approach happened while the Watch was not ranging at all.
+		// A restart is the same evidence a new session is: the peer decided the
+		// wearer approached. Arm on it the same way. Checked before the feed so
+		// the range that rides in with the restart is already judged armed.
+		{
+			uint32_t start_gen = ultrawidelock_uwb_start_generation();
+
+			if (start_gen != last_start_gen) {
+				last_start_gen = start_gen;
+				ESP_LOGI(TAG, "ranging started (gen %u): approach gate armed",
+					 (unsigned)start_gen);
+				ultrawidelock_approach_session_up(&approach);
+			}
+		}
 
 		int32_t cm = 0;
 		bool active = (woke > 0);

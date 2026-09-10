@@ -104,6 +104,18 @@ same BLE session, once its wearer is back).
   new session is, and arms the gate the same way. SDK:
   `ultrawidelock_uwb_start_generation()`.
 
+### ESP32-S3
+
+- **ESP32: the second approach never unlocked.** Same fault as the CDK's,
+  same peer behaviour: the departure relock disarmed the trajectory gate and
+  the Watch restarted ranging already inside `approach_cm`, so nothing
+  re-armed it. The first approach worked because the far range does arrive
+  there (no RSSI power gate); the restart-while-close case had nothing to
+  arm on. The reader task now arms the gate on the two edges the CDK uses:
+  a ranging restart (`ultrawidelock_uwb_start_generation()` moved) and a
+  credential session coming up. A host test walks up, departs, restarts
+  ranging at 130 cm and unlocks again; without the restart it stays locked.
+
 ### DWM3001CDK
 
 - **`prov` can be typed at the RTT terminal.** The Matter image has no

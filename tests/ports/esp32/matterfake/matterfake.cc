@@ -814,6 +814,7 @@ uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t ticks)
 	mfk_trusted_cm = s->cm;
 	mfk_now_us += s->advance_ms * 1000;
 	mfk_session_active = s->session;
+	mfk_uwb_start_generation += (uint32_t)s->start_bump;
 	return s->wake;
 }
 
@@ -990,6 +991,7 @@ int mfk_ble_prepare_null;
 int mfk_notify_unlock_calls;
 int mfk_notify_unlock_last = -1;
 int mfk_session_active;
+uint32_t mfk_uwb_start_generation;
 int mfk_auth_cred_have;
 uint8_t mfk_auth_cred[65];
 int mfk_prov_print_calls;
@@ -1274,6 +1276,11 @@ bool ultrawidelock_uwb_trusted_range_cm(int32_t *cm_out)
 	}
 	*cm_out = mfk_trusted_cm;
 	return true;
+}
+
+uint32_t ultrawidelock_uwb_start_generation(void)
+{
+	return mfk_uwb_start_generation;
 }
 
 void ultrawidelock_uwb_set_range_listener(void (*cb)(void))

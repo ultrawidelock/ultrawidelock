@@ -80,7 +80,7 @@ static void okc(const char *name, int cond)
 /* ---- helpers -------------------------------------------------------------- */
 /* A wake with the credential session up (the usual case: ranging implies a session). */
 static void wake_push(uint32_t wake, int trusted, int32_t cm, int64_t advance_ms,
-		      int session = 1)
+		      int session = 1, int start_bump = 0)
 {
 	if (mfk_wake_len < MFK_WAKE_MAX) {
 		mfk_wake_script[mfk_wake_len].wake = wake;
@@ -88,6 +88,7 @@ static void wake_push(uint32_t wake, int trusted, int32_t cm, int64_t advance_ms
 		mfk_wake_script[mfk_wake_len].cm = cm;
 		mfk_wake_script[mfk_wake_len].advance_ms = advance_ms;
 		mfk_wake_script[mfk_wake_len].session = session;
+		mfk_wake_script[mfk_wake_len].start_bump = start_bump;
 		mfk_wake_len++;
 	}
 }
@@ -1003,9 +1004,10 @@ static void section_reader_task(void)
 	mfk_wake_idx = 0;
 	wake_push(1, 0, 0, 10);    /* active but untrusted: activity only */
 	/* Arms the trajectory gate (ultrawidelock_approach_cfg::approach_cm, 180 cm by
-	 * default). Without a sample this far out the controller now refuses to
-	 * unlock at all, which is the point of it: a credential that appears
-	 * already at the door never approached. 200 cm also sits in the dead
+	 * default). Without a sample this far out the controller refuses to
+	 * unlock, which is the point of it: a credential that appears already
+	 * at the door never approached. (The session's rising edge arms it too
+	 * now; run 8 pins that on its own.) 200 cm also sits in the dead
 	 * band, so it moves no dwell counter and the sequence below is otherwise
 	 * the walk-up it always was. */
 	wake_push(1, 1, 200, 10);  /* approach starts beyond the door zone */
@@ -1155,6 +1157,63 @@ static void section_reader_task(void)
 	    mfk_dls_set_lock_calls >= 1 && mfk_dls_last_state == (int)DlLockState::kUnlocked);
 	mfk_predict_hook = nullptr;
 	mfk_may_predict = 1;
+
+	/* run 7: the Watch's second approach. The Watch keeps its BLE session
+	 * across a walk-away: it suspends ranging once far and starts it again
+	 * (new STS, same session id) once its wearer is back -- already inside
+	 * approach_cm (61 cm and 130 cm measured on the CDK, 2026-09-10). The
+	 * departure relock disarmed the trajectory gate, and no range at or past
+	 * approach_cm ever arrives to re-arm it: the far half of that approach
+	 * happened while the Watch was not ranging. A ranging RESTART
+	 * (ultrawidelock_uwb_start_generation() moved) is the approach evidence.
+	 * The 3 s silent wake ages the departure samples out of the median
+	 * window, as the suspended ranging does on the wrist. */
+	auto watch_return = [&](int restart) {
+		mfk_notify_unlock_calls = 0;
+		mfk_dls_set_lock_calls = 0;
+		mfk_dls_last_state = (int)DlLockState::kLocked;
+		mfk_uwb_start_generation = 7;
+		mfk_wake_len = 0;
+		mfk_wake_idx = 0;
+		wake_push(1, 1, 200, 10); /* arms the trajectory gate; see run 1 */
+		wake_push(1, 1, 50, 10);
+		wake_push(1, 1, 60, 10);  /* first unlock */
+		wake_push(1, 1, 40, 10);
+		wake_push(1, 1, 300, 10);
+		wake_push(1, 1, 500, 10);
+		wake_push(1, 1, 600, 10);
+		wake_push(1, 1, 650, 10);
+		wake_push(1, 1, 700, 10); /* far dwell 3 -> relock, gate disarmed; last range before the silence */
+		wake_push(0, 0, 0, 3000); /* the Watch suspended ranging while far */
+		wake_push(1, 1, 130, 10, 1, restart); /* back, already inside approach_cm */
+		wake_push(1, 1, 61, 10);
+		wake_push(1, 1, 50, 10);
+		wake_push(1, 1, 40, 10);  /* near dwell -> second unlock, if armed */
+		mfk_task_run(task, nullptr);
+	};
+	watch_return(1);
+	okc("watch: relock, ranging restart inside approach_cm, second unlock",
+	    mfk_dls_last_state == (int)DlLockState::kUnlocked && mfk_notify_unlock_calls == 3 &&
+		    mfk_notify_unlock_last == 1);
+	watch_return(0);
+	okc("watch: the same return with no restart stays locked (gate still disarmed)",
+	    mfk_dls_last_state == (int)DlLockState::kLocked && mfk_notify_unlock_calls == 2);
+
+	/* run 8: a session that comes up already at the door, no far range ever.
+	 * With the RSSI power gate that is every session (ranging starts inside
+	 * unlock_cm), and the gate's rising edge is the only approach evidence
+	 * the architecture produces -- the CDK arms on it; so does this loop. */
+	mfk_notify_unlock_calls = 0;
+	mfk_dls_set_lock_calls = 0;
+	mfk_dls_last_state = (int)DlLockState::kLocked;
+	mfk_wake_len = 0;
+	mfk_wake_idx = 0;
+	wake_push(1, 1, 60, 10); /* session rises with the first range: inside approach_cm */
+	wake_push(1, 1, 50, 10);
+	wake_push(1, 1, 40, 10); /* near dwell -> unlock */
+	mfk_task_run(task, nullptr);
+	okc("session rising edge arms the gate: unlock with no far range",
+	    mfk_dls_last_state == (int)DlLockState::kUnlocked && mfk_notify_unlock_calls == 1);
 }
 
 /* ---- I: UWB range listener ---------------------------------------------------------- */
