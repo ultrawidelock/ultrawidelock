@@ -130,8 +130,9 @@ int ultrawidelock_stepup_seal_sessiondata(struct ultrawidelock_secchan *sc, cons
 					  size_t *out_len);
 
 /* Open a SessionData message: unwrap {"data": bstr}, AES-256-GCM-open under the
- * channel, and write the plaintext DeviceResponse. Returns 0 and sets *out_len;
- * <0 on a malformed wrapper or a GCM tag mismatch. */
+ * channel, and write the plaintext DeviceResponse. out may be sd itself (the
+ * plaintext lands below the ciphertext it replaces). Returns 0 and sets
+ * *out_len; <0 on a malformed wrapper or a GCM tag mismatch. */
 int ultrawidelock_stepup_open_sessiondata(struct ultrawidelock_secchan *sc, const uint8_t *sd,
 					  size_t sd_len, uint8_t *out, size_t cap, size_t *out_len);
 

@@ -401,6 +401,27 @@ void test_ultrawidelock_prim_psa(void)
 						      big_ct, LENS[i], tag, 16, big_pt),
 			     0);
 		}
+		/* In place, the way the step-up learn path opens a SessionData: the
+		 * plaintext starts at or below the ciphertext in one buffer. Every
+		 * length again, since the bulk/tail split moves with it. */
+		for (size_t shift = 0; shift <= 9u; shift += 9u) {
+			for (size_t i = 0; i < sizeof(LENS) / sizeof(LENS[0]); i++) {
+				for (size_t j = 0; j < LENS[i]; j++) {
+					big[j] = (uint8_t)(j * 7u + 1u);
+				}
+				memcpy(big_ct + shift, big, LENS[i]);
+				psafake_reset();
+				psafake.block_hold = 16u;
+				T_EQ(shift ? "in place, pt below ct: decrypt" : "in place, pt == ct: decrypt",
+				     ultrawidelock_aes256_gcm_decrypt(K32, NONCE, 12, AAD, sizeof(AAD),
+								      big_ct + shift, LENS[i], tag, 16,
+								      big_ct),
+				     0);
+				T_OK("in place: plaintext intact", memcmp(big_ct, big, LENS[i]) == 0);
+				T_EQ("in place: PSA never handed overlapping buffers",
+				     (long)psafake.aead_update_overlaps, 0L);
+			}
+		}
 		psafake_reset();
 	}
 }

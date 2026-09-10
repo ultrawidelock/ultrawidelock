@@ -99,9 +99,38 @@ int ultrawidelock_aes256_gcm_encrypt(const uint8_t key[32], const uint8_t *nonce
 	return rc;
 }
 
+// Decrypt the block-aligned prefix through a small window and copy each piece out, rather than
+// straight into pt. A GCM backend never emits more than it has read, so every piece lands behind
+// input already consumed and pt may start at or below ct in the same buffer -- the step-up learn
+// path opens a SessionData in the buffer it arrived in. No update is handed overlapping buffers,
+// which PSA leaves undefined; one that would write past the input it has read fails closed. The
+// window keeps the portable contract: input plus one block of output room.
+static int gcm_decrypt_bulk(psa_aead_operation_t *op, const uint8_t *ct, size_t len, uint8_t *pt,
+			    uint8_t *win, size_t win_len, size_t *out_len)
+{
+	size_t step = win_len - ULTRAWIDELOCK_AES_BLOCK;
+	size_t done = 0;
+
+	*out_len = 0;
+	while (done < len) {
+		size_t n = (len - done < step) ? len - done : step;
+		size_t got = 0;
+
+		if (psa_aead_update(op, ct + done, n, win, win_len, &got) != PSA_SUCCESS ||
+		    got > win_len || *out_len + got > done + n) {
+			return -1;
+		}
+		memcpy(pt + *out_len, win, got);
+		*out_len += got;
+		done += n;
+	}
+	return 0;
+}
+
 // Decrypt and authenticate an AES-256-GCM ciphertext via PSA Crypto.
-// Writes ct_len bytes of plaintext to pt. Returns 0 on success (tag verified), -1 if tag_len
-// exceeds ULTRAWIDELOCK_GCM_TAG, key import fails, or authentication/decryption fails.
+// Writes ct_len bytes of plaintext to pt, which may alias ct from below (see gcm_decrypt_bulk).
+// Returns 0 on success (tag verified), -1 if tag_len exceeds ULTRAWIDELOCK_GCM_TAG, key import
+// fails, or authentication/decryption fails.
 int ultrawidelock_aes256_gcm_decrypt(const uint8_t key[32], const uint8_t *nonce, size_t nonce_len,
 			     const uint8_t *aad, size_t aad_len, const uint8_t *ct, size_t ct_len,
 			     const uint8_t *tag, size_t tag_len, uint8_t *pt)
@@ -110,9 +139,10 @@ int ultrawidelock_aes256_gcm_decrypt(const uint8_t key[32], const uint8_t *nonce
 	psa_aead_operation_t op = PSA_AEAD_OPERATION_INIT;
 	psa_key_id_t k = 0;
 	psa_algorithm_t alg = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_GCM, tag_len);
-	/* See encrypt: the direct prefix stops one block short of the end so every
+	/* See encrypt: the prefix stops one block short of the end so every
 	 * update has input_length + one block of output room, which is what PSA's
-	 * portable contract requires -- and still no message-sized scratch. */
+	 * portable contract requires -- and still no message-sized scratch. The
+	 * prefix goes through pending as its window before the tail uses it. */
 	uint8_t pending[3u * ULTRAWIDELOCK_AES_BLOCK];
 	uint8_t final[2u * ULTRAWIDELOCK_AES_BLOCK];
 	size_t bulk_len = (ct_len >= ULTRAWIDELOCK_AES_BLOCK)
@@ -139,8 +169,7 @@ int ultrawidelock_aes256_gcm_decrypt(const uint8_t key[32], const uint8_t *nonce
 	    psa_aead_set_lengths(&op, aad_len, ct_len) == PSA_SUCCESS &&
 	    psa_aead_set_nonce(&op, nonce, nonce_len) == PSA_SUCCESS &&
 	    psa_aead_update_ad(&op, aad, aad_len) == PSA_SUCCESS &&
-	    (bulk_len == 0u ||
-	     psa_aead_update(&op, ct, bulk_len, pt, ct_len, &bulk_out) == PSA_SUCCESS) &&
+	    gcm_decrypt_bulk(&op, ct, bulk_len, pt, pending, sizeof(pending), &bulk_out) == 0 &&
 	    bulk_out <= ct_len &&
 	    (tail_len == 0u ||
 	     psa_aead_update(&op, ct + bulk_len, tail_len, pending, sizeof(pending),
