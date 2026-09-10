@@ -313,8 +313,11 @@ jobs:
   # sign IS the gate here" -- because that profile is deliberately not held to a
   # recorded size baseline. One build therefore answers two questions: does the
   # application still compile, and does the image with the least room left still
-  # fit. CLIENT=1 also compiles a strict superset of the plain image's
-  # application sources, so nothing is given up by choosing it.
+  # fit. CLIENT=1 compiles a strict superset of the plain image's application
+  # sources with one exception since #48: the debug client turns the step-up
+  # phase off (overlay-client-debug.conf), so ultrawidelock_stepup.c and the
+  # wire codecs compile and fit-check only in the shipping and anchorlink
+  # steps below.
   #
   # PRISTINE=1 rather than an incremental build, even though it is the expensive
   # half. `west build -p auto` does not re-run CMake for a changed `-D` flag (see
@@ -642,8 +645,10 @@ jobs:
         # each region: 92.95% FLASH and 90.26% RAM here against 98.72% and
         # 95.94% there. Neither image's fit implies the other's.
         #
-        # It adds no application source the client image has not already
-        # compiled -- its value is the configuration, not new files. MEASURED at
+        # It is also the first step that compiles the step-up phase
+        # (ultrawidelock_stepup.c and the wire codecs, off in the debug client
+        # since #48). Beyond that it adds no application source the client image
+        # has not already compiled -- its value is the configuration. MEASURED at
         # 252.6 s, which is MORE than the client image costs from a cold ccache,
         # because RELEASE and SMP change enough of the Kconfig tree that most of
         # the warm entries do not apply.

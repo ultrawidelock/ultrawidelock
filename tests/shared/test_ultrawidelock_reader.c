@@ -599,6 +599,13 @@ static void ph_initiate(struct ph *p, uint16_t conn, int with_a5)
 	ph_send(conn, ULTRAWIDELOCK_PROTO_NOTIFICATION, ULTRAWIDELOCK_NOTIF_INITIATE_AP, pl, n);
 }
 
+/* Phone opens the connection with an arbitrary op-0x05 payload (the 0xA5 edge
+ * cases: over-long, long-form length, nested). */
+static void ph_initiate_raw(uint16_t conn, const uint8_t *pl, size_t n)
+{
+	ph_send(conn, ULTRAWIDELOCK_PROTO_NOTIFICATION, ULTRAWIDELOCK_NOTIF_INITIATE_AP, pl, n);
+}
+
 /* Consume the reader's AUTH0 and capture the transcript inputs off the wire.
  * Returns 0 and fills r_eph_pub/txid/r_id/exp_phase, or -1. */
 static int ph_take_auth0(struct ph *p)
@@ -1269,6 +1276,63 @@ int main(void)
 	s_cfg.cb.on_disconnected(1);
 	okc("t0.ranging_stopped", s_rng_stops == 1);
 	okc("t0.nothing_persisted", s_nvs_stores == 0); /* dev-accepted: no Kpersistent */
+
+	/* T1: a 0xA5 TLV that is present but cannot be used must end the transaction
+	 * with a named reason, never fall back to the CSA v1.0 salt (that is a wrong
+	 * key schedule, and AUTH1 would fail later with a GCM error pointing nowhere
+	 * near the cause). a5_tlv is 64 B per session; real phones send 10 B. */
+	{
+		uint8_t pl[80];
+		size_t n;
+		int disconnects;
+
+		/* (a) 70 B value: too large for the 64 B buffer */
+		memset(pl, 0x11, sizeof(pl));
+		pl[0] = 0x00;
+		pl[1] = 0xa5;
+		pl[2] = 70;
+		n = 3 + 70;
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(10);
+		ph_initiate_raw(10, pl, n);
+		okc("t1.a5_too_large_terminates", s_disconnects == disconnects + 1 && tx_pending() == 0);
+		s_cfg.cb.on_disconnected(10);
+
+		/* (b) long-form length (0x81 0x0a): present, not parsed */
+		static const uint8_t longform[] = {0x00, 0xa5, 0x81, 0x0a, 0x80, 0x02, 0x00, 0x00,
+						   0x5c, 0x02, 0x01, 0x00, 0x00, 0x00};
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(11);
+		ph_initiate_raw(11, longform, sizeof(longform));
+		okc("t1.a5_longform_terminates", s_disconnects == disconnects + 1 && tx_pending() == 0);
+		s_cfg.cb.on_disconnected(11);
+
+		/* (c) a well-formed 0xA5 TLV inside the over-long one's value is not
+		 * what the phone sent: the scan stops at the first candidate. */
+		memset(pl, 0x11, sizeof(pl));
+		pl[0] = 0x00;
+		pl[1] = 0xa5;
+		pl[2] = 70;
+		memcpy(pl + 3 + 20, k_a5_phone, sizeof(k_a5_phone));
+		n = 3 + 70;
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(12);
+		ph_initiate_raw(12, pl, n);
+		okc("t1.a5_nested_not_captured",
+		    s_disconnects == disconnects + 1 && tx_pending() == 0);
+		s_cfg.cb.on_disconnected(12);
+
+		/* (d) the 10 B TLV real phones send is captured and AUTH0 follows */
+		pl[0] = 0x00;
+		memcpy(pl + 1, k_a5_csa, sizeof(k_a5_csa));
+		n = 1 + sizeof(k_a5_csa);
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(13);
+		ph_initiate_raw(13, pl, n);
+		okc("t1.a5_10B_auth0", s_disconnects == disconnects && ph_take_auth0(&p) == 0);
+		s_cfg.cb.on_disconnected(13);
+		s_disconnects = 0; /* section A counts disconnects from zero */
+	}
 
 	printf("\n== A: provisioned identity + trusted credential (standard) ==\n");
 	uint8_t rid[32], sp[32], grk0[16] = {0};
@@ -2691,6 +2755,83 @@ int main(void)
 		ultrawidelock_reader_set_credential_learned_listener(NULL);
 	}
 #endif /* CONFIG_ULTRAWIDELOCK_CRED_STEPUP */
+
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
+	printf("\n== H: bench step-up, a DeviceResponse over the buffer is dropped whole ==\n");
+	/*
+	 * The collection buffer is 1536 B. A document that outgrows it must not be
+	 * handed to the worker gapped (the chunk that overflowed missing, later ones
+	 * appended): the collection fails on the first overflow, the buffer goes back
+	 * at once, and the rest of the 61XX chain is drained without collecting.
+	 */
+	{
+		uint8_t rid[32], sp[32], grk0[16] = {0};
+		uint8_t devreq[256], chunk[522];
+		size_t drn, dn;
+		struct ph q, r;
+		int submits = s_worker_submits;
+
+		memset(rid, 0xA1, sizeof(rid));
+		memset(sp, 0x34, sizeof(sp));
+		okc("h.provision_id", ultrawidelock_reader_provision_identity(rid, sp, grk0) == 0);
+		(void)ultrawidelock_reader_trust_clear();
+		memset(&q, 0, sizeof(q));
+		ultrawidelock_ec_p256_pub_from_priv(sp, q.rvk);
+		memset(q.cred_priv, 0xC9, sizeof(q.cred_priv));
+		ultrawidelock_ec_p256_pub_from_priv(q.cred_priv, q.cred_pub);
+		memset(&r, 0, sizeof(r));
+		memcpy(r.rvk, q.rvk, sizeof(r.rvk));
+		memset(r.cred_priv, 0xCA, sizeof(r.cred_priv));
+		ultrawidelock_ec_p256_pub_from_priv(r.cred_priv, r.cred_pub);
+		okc("h.trust_q", ultrawidelock_reader_provision_add_trust(q.cred_pub, 0u,
+				 ULTRAWIDELOCK_CRED_INDEX_NONE, ULTRAWIDELOCK_CRED_INDEX_NONE) == 0);
+		okc("h.trust_r", ultrawidelock_reader_provision_add_trust(r.cred_pub, 0u,
+				 ULTRAWIDELOCK_CRED_INDEX_NONE, ULTRAWIDELOCK_CRED_INDEX_NONE) == 0);
+		tx_reset();
+
+		/* q: 3 x 520 B chunks (1560 B > 1536) then a 100 B tail with SW 9000 */
+		ultrawidelock_reader_stepup_arm();
+		s_cfg.cb.on_connected(90);
+		ph_initiate(&q, 90, 0);
+		okc("h1.auth0", ph_take_auth0(&q) == 0);
+		ph_auth0_resp(&q, 90, 0xF0);
+		okc("h1.auth1_resp", ph_auth1_resp(&q, 90, NULL, 0) == 0);
+		okc("h1.exchange", ph_exchange_resp(&q, 90) == 0);
+		okc("h1.envelope", ph_take_envelope(&q, devreq, sizeof(devreq), &drn) == 0);
+		memset(chunk, 0x5a, sizeof(chunk));
+		for (int i = 0; i < 3; i++) {
+			chunk[520] = 0x61;
+			chunk[521] = 0x00;
+			ph_send(90, ULTRAWIDELOCK_PROTO_ACCESS, ULTRAWIDELOCK_AP_OP_RESPONSE, chunk, 522);
+			okc("h1.get_response", tx_next(&dn) != NULL);
+		}
+
+		/* r, while q's chain is still open: the buffer came back on the
+		 * overflow, so r's own step-up gets it (an ENVELOPE, not a plain
+		 * AP-Completed). */
+		ultrawidelock_reader_stepup_arm();
+		s_cfg.cb.on_connected(91);
+		ph_initiate(&r, 91, 0);
+		okc("h2.auth0", ph_take_auth0(&r) == 0);
+		ph_auth0_resp(&r, 91, 0xF1);
+		okc("h2.auth1_resp", ph_auth1_resp(&r, 91, NULL, 0) == 0);
+		okc("h2.exchange", ph_exchange_resp(&r, 91) == 0);
+		okc("h2.buffer_released", ph_take_envelope(&r, devreq, sizeof(devreq), &drn) == 0);
+
+		/* q's tail fits on its own; it must not be collected or submitted */
+		chunk[100] = 0x90;
+		chunk[101] = 0x00;
+		ph_send(90, ULTRAWIDELOCK_PROTO_ACCESS, ULTRAWIDELOCK_AP_OP_RESPONSE, chunk, 102);
+		okc("h1.ap_completed", ph_take_ap_completed(&q) == 0);
+		okc("h1.no_job_submitted", s_worker_submits == submits);
+
+		ph_stepup_resp(&r, 91, NULL, 0, 0x6A, 0x82);
+		okc("h2.ap_completed", ph_take_ap_completed(&r) == 0);
+		okc("h2.no_job_submitted", s_worker_submits == submits);
+		s_cfg.cb.on_disconnected(91);
+		s_cfg.cb.on_disconnected(90);
+	}
+#endif /* CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH */
 
 	/* console/status entry points: exercised for effect-free execution */
 	ultrawidelock_reader_prov_print();

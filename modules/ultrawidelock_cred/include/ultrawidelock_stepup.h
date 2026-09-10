@@ -39,6 +39,10 @@
 
 #include "ultrawidelock_crypto.h" /* struct ultrawidelock_secchan */
 
+#if defined(ESP_PLATFORM)
+#include "sdkconfig.h" /* CONFIG_ULTRAWIDELOCK_STEPUP_MAX_* (Zephyr injects autoconf.h itself) */
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -147,16 +151,32 @@ int ultrawidelock_stepup_build_envelope(const uint8_t *data, size_t data_len, in
 int ultrawidelock_stepup_build_get_response(uint8_t le, uint8_t *out, size_t cap, size_t *out_len);
 
 /* ---- parsed DeviceResponse (slices into the caller's buffer) ---- */
-/* Parser capacity. Overridable per build (-D) because struct ultrawidelock_stepup_doc
- * is sized by them and lives in static RAM on the reader: the DWM3001CDK trims
- * both to fit an nRF52833. Every consumer of a build must see one value. */
+/* Parser capacity. Set per build through Kconfig (CONFIG_ULTRAWIDELOCK_STEPUP_MAX_*)
+ * because struct ultrawidelock_stepup_doc is sized by them and lives in static RAM
+ * on the reader: the DWM3001CDK trims both to fit an nRF52833. Every consumer of
+ * a build must see one value; host builds get the defaults. */
 #ifndef ULTRAWIDELOCK_STEPUP_MAX_DIGESTS
+#if defined(CONFIG_ULTRAWIDELOCK_STEPUP_MAX_DIGESTS)
+#define ULTRAWIDELOCK_STEPUP_MAX_DIGESTS ((unsigned)CONFIG_ULTRAWIDELOCK_STEPUP_MAX_DIGESTS)
+#else
 #define ULTRAWIDELOCK_STEPUP_MAX_DIGESTS 24u
 #endif
+#endif
 #ifndef ULTRAWIDELOCK_STEPUP_MAX_ITEMS
+#if defined(CONFIG_ULTRAWIDELOCK_STEPUP_MAX_ITEMS)
+#define ULTRAWIDELOCK_STEPUP_MAX_ITEMS   ((unsigned)CONFIG_ULTRAWIDELOCK_STEPUP_MAX_ITEMS)
+#else
 #define ULTRAWIDELOCK_STEPUP_MAX_ITEMS   16u
 #endif
+#endif
 #define ULTRAWIDELOCK_STEPUP_ID_MAX      32u
+/* struct ultrawidelock_stepup_doc.truncated: which text fields were cut to fit. */
+#define ULTRAWIDELOCK_STEPUP_TRUNC_DOC_TYPE     0x01u
+#define ULTRAWIDELOCK_STEPUP_TRUNC_MSO_DOC_TYPE 0x02u
+#define ULTRAWIDELOCK_STEPUP_TRUNC_NAME_SPACE   0x04u
+#define ULTRAWIDELOCK_STEPUP_TRUNC_DIGEST_ALG   0x08u
+#define ULTRAWIDELOCK_STEPUP_TRUNC_VERSION      0x10u
+#define ULTRAWIDELOCK_STEPUP_TRUNC_ELEM_ID      0x20u /* any item's elementIdentifier */
 
 /**
  * Step-up credential element digest: SHA-256 hash of a disclosed IssuerSignedItem, with its
@@ -218,6 +238,7 @@ struct ultrawidelock_stepup_doc {
 	char mso_doc_type[ULTRAWIDELOCK_STEPUP_ID_MAX];
 	struct ultrawidelock_stepup_digest digests[ULTRAWIDELOCK_STEPUP_MAX_DIGESTS];
 	size_t n_digests;
+	size_t n_digests_dropped; /* past the cap: counted, not an error */
 
 	/* deviceKeyInfo ("4") deviceKey as an uncompressed P-256 point, when the
 	 * COSE_Key is EC2/P-256 with 32-byte x and y (compact key "1", with the
@@ -238,6 +259,8 @@ struct ultrawidelock_stepup_doc {
 	/* disclosed IssuerSignedItems. */
 	struct ultrawidelock_stepup_item items[ULTRAWIDELOCK_STEPUP_MAX_ITEMS];
 	size_t n_items;
+	size_t n_items_dropped; /* past the cap: counted, not an error */
+	uint8_t truncated;      /* ULTRAWIDELOCK_STEPUP_TRUNC_* text fields cut to fit */
 };
 
 /* Structural decode of a plaintext DeviceResponse (Table 8-22). CRYPTO-FREE and
@@ -290,6 +313,9 @@ struct ultrawidelock_stepup_verdict {
 	int time_ok;                /* step 5 */
 	int iteration_ok;           /* step 6 */
 	size_t valid_elements;      /* disclosed items whose digest verified */
+	size_t n_digests_dropped;   /* from the parsed doc: past the caps */
+	size_t n_items_dropped;
+	uint8_t truncated;          /* from the parsed doc: ULTRAWIDELOCK_STEPUP_TRUNC_* */
 };
 
 /* Run §7.4 over a parsed document. Never gates access; fills *verdict for the

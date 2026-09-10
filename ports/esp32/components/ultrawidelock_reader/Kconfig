@@ -234,6 +234,34 @@ config ULTRAWIDELOCK_CRED_STEPUP_BENCH
 	  The console-armed one-shot and the FreeRTOS worker that verifies its
 	  document off the BLE-host task. The learn path does not need either.
 
+config ULTRAWIDELOCK_CRED_STEPUP_SD_MAX
+	int "Step-up DeviceResponse collection buffer (bytes)"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	default 1536
+	help
+	  Static RAM for the one SessionData DeviceResponse the reader collects
+	  across the 61XX chain, shared by every session. A document that outgrows
+	  it is dropped, never verified gapped. The bench worker's job copy must
+	  be at least this large (checked at compile time).
+
+config ULTRAWIDELOCK_STEPUP_MAX_DIGESTS
+	int "Step-up parser: value digests kept per document"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	default 24
+	help
+	  Capacity of the parsed document's digest table (32 bytes each, static
+	  RAM). Digests past it are counted in the verdict, not treated as a parse
+	  error. The spec example carries 3.
+
+config ULTRAWIDELOCK_STEPUP_MAX_ITEMS
+	int "Step-up parser: disclosed items kept per document"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	default 16
+	help
+	  Capacity of the parsed document's item table (static RAM). Items past
+	  it are counted in the verdict, not treated as a parse error. The spec
+	  example carries 1.
+
 config ULTRAWIDELOCK_CRED_ACCESS_LISTENER
 	bool "Expose the access verdict to a registered listener"
 	default n

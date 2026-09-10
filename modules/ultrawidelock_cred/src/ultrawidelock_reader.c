@@ -284,7 +284,11 @@ static bool s_stepup_armed;
  * that transaction is simply told no), and the nRF52833 cannot spare a second
  * copy. Owned by a connection handle while it collects; STEPUP_SD_FREE when
  * idle. The bench worker's job copy (2 KiB) is sized to take it whole. */
+#if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_SD_MAX)
+#define STEPUP_SD_MAX  ((unsigned)CONFIG_ULTRAWIDELOCK_CRED_STEPUP_SD_MAX)
+#else
 #define STEPUP_SD_MAX  1536u
+#endif
 #define STEPUP_SD_FREE 0xFFFFu
 static uint8_t s_stepup_sd[STEPUP_SD_MAX];
 static size_t s_stepup_sd_len;
@@ -1477,10 +1481,10 @@ static void stepup_submit_job(struct ultrawidelock_session *s)
 	job.time_valid = 0;
 	job.now_epoch = 0;
 	job.conn_handle = s->conn_handle;
-	if (s_stepup_sd_len <= sizeof(job.sd)) {
-		memcpy(job.sd, s_stepup_sd, s_stepup_sd_len);
-		job.sd_len = s_stepup_sd_len;
-	}
+	_Static_assert(STEPUP_SD_MAX <= sizeof(((struct ultrawidelock_stepup_job *)0)->sd),
+		       "the worker's job copy must take the collection buffer whole");
+	memcpy(job.sd, s_stepup_sd, s_stepup_sd_len);
+	job.sd_len = s_stepup_sd_len;
 	if (ultrawidelock_stepup_worker_submit(&job) != 0) {
 		LOG_WRN("[conn %u] step-up: worker submit failed (verdict skipped)",
 			s->conn_handle);
@@ -1684,9 +1688,10 @@ static void learn_decide(struct ultrawidelock_session *s)
 
 	if (iss < 0) {
 		LOG_WRN("[conn %u] Access Document verdict: step=%d issuer=%d sig=%d dig=%d type=%d "
-			"time=%d iter=%d el=%u",
+			"time=%d iter=%d el=%u drop=%u/%u tr=%x",
 			s->conn_handle, v.reject_step, v.issuer_key_found, v.sig_ok, v.digests_ok,
-			v.doctype_ok, v.time_ok, v.iteration_ok, (unsigned)v.valid_elements);
+			v.doctype_ok, v.time_ok, v.iteration_ok, (unsigned)v.valid_elements,
+			(unsigned)v.n_digests_dropped, (unsigned)v.n_items_dropped, v.truncated);
 		learn_reject(s, why);
 		return;
 	}
@@ -1727,8 +1732,14 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 			learn_reject(s, "document too large");
 			return;
 		}
-		LOG_WRN("[conn %u] step-up: DeviceResponse over %u B; truncating", s->conn_handle,
-			(unsigned)sizeof(s_stepup_sd));
+		/* Bench: the first overflow ends the collection and gives the buffer
+		 * back; the rest of the 61XX chain is drained without collecting, so
+		 * a gapped document is never submitted. Logged once, while still owner. */
+		if (s_stepup_sd_owner == s->conn_handle) {
+			LOG_WRN("[conn %u] step-up: DeviceResponse over %u B; dropped",
+				s->conn_handle, (unsigned)sizeof(s_stepup_sd));
+			stepup_sd_release(s->conn_handle);
+		}
 	}
 
 	if ((sw & 0xff00u) == 0x6100u) {
@@ -1764,7 +1775,7 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 	/* Complete the AP + arm ranging FIRST so the verify never delays the unlock,
 	 * then hand the document to the worker. */
 	gated_complete_ap(s);
-	if (s_stepup_sd_len > 0) {
+	if (s_stepup_sd_owner == s->conn_handle && s_stepup_sd_len > 0) {
 		stepup_submit_job(s);
 	} else {
 		s->stepup_active = false;
@@ -2205,9 +2216,13 @@ bool ultrawidelock_reader_presence_checkpoint(uint32_t request, uint32_t *auth_g
 
 /* Scan an op-0x05 Initiate-Access-Protocol payload for the phone's 0xA5
  * proprietary-information TLV (short-form BER length; the A5 value is small) and
- * copy the whole TLV (tag+len+value) into out. Returns the stored length, or 0
- * if no well-formed 0xA5 TLV fits. */
-static size_t capture_a5_tlv(const uint8_t *pl, size_t pl_len, uint8_t *out, size_t cap)
+ * copy the whole TLV (tag+len+value) into out. Returns the stored length, 0 if
+ * no 0xA5 TLV is present, or -1 if one is present but unusable (long-form
+ * length, or larger than cap) with *seen set to its length byte. The scan stops
+ * at the first candidate that spans the payload: a 0xA5 inside its value is not
+ * another TLV. */
+static int capture_a5_tlv(const uint8_t *pl, size_t pl_len, uint8_t *out, size_t cap,
+			  unsigned *seen)
 {
 	for (size_t i = 0; i + 2u <= pl_len; i++) {
 		if (pl[i] != 0xA5u) {
@@ -2216,10 +2231,18 @@ static size_t capture_a5_tlv(const uint8_t *pl, size_t pl_len, uint8_t *out, siz
 		size_t vlen = pl[i + 1]; /* short-form length only */
 		size_t tlv = 2u + vlen;
 
-		if (vlen < 0x80u && i + tlv <= pl_len && tlv <= cap) {
-			memcpy(out, pl + i, tlv);
-			return tlv;
+		*seen = (unsigned)vlen;
+		if (vlen >= 0x80u) {
+			return -1;
 		}
+		if (i + tlv > pl_len) {
+			continue;
+		}
+		if (tlv > cap) {
+			return -1;
+		}
+		memcpy(out, pl + i, tlv);
+		return (int)tlv;
 	}
 	return 0;
 }
@@ -2284,7 +2307,19 @@ static void transaction_feed(struct ultrawidelock_session *s, const uint8_t *dat
 		 * salt (§8.3.1.13 trailing field) before driving AUTH0; fall back to the
 		 * CSA v1.0 default if the phone sent none. Version negotiation rides the
 		 * GATT characteristic. */
-		s->a5_len = capture_a5_tlv(pl, pl_len, s->a5_tlv, sizeof(s->a5_tlv));
+		unsigned a5_seen = 0;
+		int a5 = capture_a5_tlv(pl, pl_len, s->a5_tlv, sizeof(s->a5_tlv), &a5_seen);
+
+		if (a5 < 0) {
+			/* Present but unusable: salting with the default would be a wrong
+			 * key schedule, and AUTH1 would fail with a GCM error far from the
+			 * cause. End it here with the reason. */
+			LOG_WRN("[conn %u] 0xA5 TLV len byte 0x%02x unusable", s->conn_handle,
+				a5_seen);
+			session_terminate(s, "0xA5 TLV unusable");
+			break;
+		}
+		s->a5_len = (size_t)a5;
 		if (s->a5_len == 0) {
 			LOG_WRN("[conn %u] no 0xA5 TLV in op-0x05; salt will use CSA v1.0 default",
 				s->conn_handle);
