@@ -133,6 +133,16 @@ static uint32_t g_pp_logged;
  * verdict). One INF line per session is the smallest thing a shipping image
  * can say. */
 static bool g_pp_inf_said;
+/* Once-per-session line for a failed next-block STS warm, through the facade
+ * printer for the same reason: a warm that fails leaves the POLL unarmed and
+ * the round silent, which a field log read as "Pre-POLL accepted, never
+ * ranged" with nothing to say why (ESP32-S3, internal heap exhausted under
+ * #46: the mbedTLS-PSA AES allocates per block). */
+static bool g_warm_fail_said;
+/* ARM FAIL trace budget, per session like g_pp_logged. It was a function
+ * static capped per boot, so a session after the first few dozen late arms
+ * failed every block without a line. */
+static uint32_t g_arm_fail_logged;
 
 /** @brief Response_0 STS (Poll_STS_Index+1): same-round dURSK plus index+1 STS-V, pre-derived in
  * the idle so the TX path runs no KDF. */
@@ -428,6 +438,8 @@ void ccc_shim_rx_log_reset(void)
 	g_uad_cached = false;
 	g_pp_logged = 0u; /* re-open the Pre-POLL trace for this session */
 	g_pp_inf_said = false;
+	g_warm_fail_said = false;
+	g_arm_fail_logged = 0u;
 	g_pp_pending = false;
 	g_await_final = false;
 	g_poll_ip_for_final = 0u;
@@ -667,13 +679,29 @@ static void prepoll_decode(const uint8_t *frame, uint16_t datalength)
 		/* EXPERIMENT-2RESP: the phone's Final RFRAME sits ULTRAWIDELOCK_FINAL_SLOT_OFFSET
 		 * slots past the POLL (n=1 -> widx+2, n=2 -> widx+3). Responder l's
 		 * Response_l sits at widx+1+l: the lock is 0, the satellite is 1. */
-		if (ccc_shim_sts_for_index(widx, g_warm_dursk, g_warm_sts_v) == 0 &&
-		    ccc_shim_sts_for_index(widx + 1u + ULTRAWIDELOCK_RESPONDER_INDEX,
-					   g_warm_resp_dursk, g_warm_resp_sts_v) == 0 &&
-		    ccc_shim_sts_for_index(widx + ULTRAWIDELOCK_FINAL_SLOT_OFFSET, g_warm_final_dursk,
-					   g_warm_final_sts_v) == 0) {
+		int wrc = ccc_shim_sts_for_index(widx, g_warm_dursk, g_warm_sts_v);
+
+		if (wrc == 0) {
+			wrc = ccc_shim_sts_for_index(widx + 1u + ULTRAWIDELOCK_RESPONDER_INDEX,
+						     g_warm_resp_dursk, g_warm_resp_sts_v);
+		}
+		if (wrc == 0) {
+			wrc = ccc_shim_sts_for_index(widx + ULTRAWIDELOCK_FINAL_SLOT_OFFSET,
+						     g_warm_final_dursk, g_warm_final_sts_v);
+		}
+		if (wrc == 0) {
 			g_warm_index = widx;
 			g_warm_valid = true;
+		} else {
+			/* The previous warm stays, and its index is already armed, so
+			 * no POLL window opens for this block. */
+			g_stats.warm_fail++;
+			if (!g_warm_fail_said) {
+				g_warm_fail_said = true;
+				ultrawidelock_printf("W: STS warm failed (rc=%d idx=%08x): POLL not "
+						     "armed until one succeeds\n",
+						     wrc, (unsigned)widx);
+			}
 		}
 	}
 	if (!g_pp_inf_said) {
@@ -1469,14 +1497,13 @@ static int arm_poll_sp3(uint32_t prepoll_ip)
 	if (gated_rxenable(DWT_START_RX_DELAYED | DWT_IDLE_ON_DLY_ERR) != DWT_SUCCESS) {
 		/* dsys >= (SLOT - LEAD) => "late": the DELAYED RX never opened, so rxto
 		 * stays 0 and the POLL is lost.  Log the first few to size the gap. */
-		static uint32_t arm_fail_n;
-		if (arm_fail_n < 40u) {
+		if (g_arm_fail_logged < CCC_RX_PREPOLL_LOG) {
 			DIAGK("ARM FAIL dsys=%u(%dus) dec=%dus off=%u %s idx=%08x\n",
 			      (unsigned)dsys, (int)(dsys / 250u), (int)(g_ccc_dbg_decode / 250u),
 			      (unsigned)(CCC_RX_SLOT_HI32 - CCC_RX_POLL_LEAD),
 			      (dsys >= (CCC_RX_SLOT_HI32 - CCC_RX_POLL_LEAD)) ? "LATE" : "not-late",
 			      (unsigned)g_warm_index);
-			arm_fail_n++;
+			g_arm_fail_logged++;
 		}
 		dwt_configurestsmode((uint8_t)DWT_STS_MODE_OFF); /* revert to SP0 */
 #if defined(CONFIG_DW3000_SPI_METRICS)
@@ -2010,6 +2037,7 @@ static void prepoll_rx_rearm(const dwt_cb_data_t *cb)
 			g_stats.poll_arm++;
 			g_await_poll = true; /* SP3 armed; do not re-arm SP0 */
 		} else {
+			g_stats.arm_fail++;
 			dwt_setrxtimeout(0u);
 			(void)gated_rxenable(DWT_START_RX_IMMEDIATE);
 		}
@@ -2162,9 +2190,11 @@ void ccc_prepoll_stop(void)
 	 * next ultrawidelock_ranging_start() stops the listener again before it
 	 * starts, and that second stop must not print a second time. */
 	if (g_stats.prepoll_ok != 0u || g_stats.poll_arm != 0u) {
-		ultrawidelock_printf("I: ranging post-mortem: prepoll=%u arm=%u poll_ok=%u "
-				     "poll_fail=%u resp=%u final=%u range=%u last_st=%08x\n",
-				     (unsigned)g_stats.prepoll_ok, (unsigned)g_stats.poll_arm,
+		ultrawidelock_printf("I: ranging post-mortem: prepoll=%u warm_fail=%u arm=%u "
+				     "arm_fail=%u poll_ok=%u poll_fail=%u resp=%u final=%u range=%u "
+				     "last_st=%08x\n",
+				     (unsigned)g_stats.prepoll_ok, (unsigned)g_stats.warm_fail,
+				     (unsigned)g_stats.poll_arm, (unsigned)g_stats.arm_fail,
 				     (unsigned)g_stats.poll_ok, (unsigned)g_stats.poll_fail,
 				     (unsigned)g_stats.resp_tx, (unsigned)g_stats.final_data,
 				     (unsigned)g_stats.range, (unsigned)g_stats.last_poll_st);

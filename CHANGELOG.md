@@ -119,6 +119,21 @@ tag was cut.
   0x5E, which it had looked for under 0x91 and then ignored) and asks only a
   device that advertises a document (bit 0), as the reference does; any
   other unknown key is rejected at AUTH1 as before.
+- **ESP32-S3: the bench step-up worker is off by default.** Its job copy and
+  scratch were 4,344 B of static internal DRAM in every shipping image, and
+  on the S3 that is the heap Matter, Wi-Fi and the UWB key schedule allocate
+  from. #46 turned it on with the learn path, and the image ran out of
+  internal heap in the field. `CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH=y`
+  brings back `ultrawidelock-stepup arm` on a bench image.
+- **A ranging session that accepts Pre-POLLs and never handles a POLL now
+  says why.** The post-mortem line gains `warm_fail=` (the next block's STS
+  could not be derived, so no POLL window can open; on the S3 the
+  mbedTLS-PSA AES allocates per block) and `arm_fail=` (the DW3000 refused
+  the delayed POLL window, typically late). The first failed warm of a
+  session also prints `W: STS warm failed`, and the `ARM FAIL` trace budget
+  is per session instead of 40 lines per boot, which is why the iPhone field
+  log that showed 16 accepted Pre-POLLs and no POLL result had nothing else
+  to show.
 
 ### Size limits in the credential reader fail loudly
 

@@ -18,6 +18,7 @@
 
 /* The CCC STS substitution seam entry point (uwb_seam.h). */
 extern int32_t ultrawidelock_uwb_arm_rx(int32_t mode);
+extern int aes_ref_fail_bits; /* aes_ref.c: fail AES blocks with keys of this size */
 
 #define RND_SID  0x11223344u
 #define RND_STS0 0x00400000u
@@ -495,4 +496,46 @@ void test_prepoll_round(void)
 		ccc_shim_rx_stats_get(&st);
 		T_EQ("stats.zeroed_by_stop", st.prepoll_ok + st.poll_arm + st.range, 0);
 	}
+
+	/* A Pre-POLL accepted and no POLL ever handled reads the same whether the
+	 * next block's STS could not be derived or the delayed RX was refused: no
+	 * POLL result, prepoll=N arm=0. The post-mortem has to tell them apart. */
+	t_group("a failed STS warm is counted, and nothing is armed off it");
+	ultrawidelock_host_rx_reset();
+	T_EQ("warm.start", ultrawidelock_uwb_start_cred(&c), 0);
+	len = mk_prepoll(frame, fc++, RND_IDX1);
+	stash_frame(frame, len, 0x8000000ull);
+	ccc_shim_rx_try_prepoll(len); /* index only: no warm attempted */
+	len = mk_prepoll(frame, fc++, RND_IDX1 + RND_STRIDE);
+	stash_frame(frame, len, 0x8100000ull);
+	aes_ref_fail_bits = 256;
+	ccc_shim_rx_try_prepoll(len); /* stride known: the warm runs and fails */
+	aes_ref_fail_bits = 0;
+	rx_event(ultrawidelock_host_rx.cbs.cbRxOk, ST_GOOD);
+	T_OK("warm.no_arm", !ccc_shim_rx_awaiting_poll());
+	{
+		struct ccc_shim_rx_stats st;
+
+		ccc_shim_rx_stats_get(&st);
+		T_EQ("warm.counted", st.warm_fail, 1);
+		T_EQ("warm.no_arm_counted", st.poll_arm, 0);
+	}
+
+	t_group("a refused POLL arm is counted");
+	len = mk_prepoll(frame, fc++, RND_IDX1 + 2u * RND_STRIDE);
+	stash_frame(frame, len, 0x8200000ull);
+	ccc_shim_rx_try_prepoll(len); /* warm succeeds this time */
+	ultrawidelock_host_rx.rxenable_ret = DWT_ERROR;
+	stash_frame(frame, len, 0x8300000ull);
+	rx_event(ultrawidelock_host_rx.cbs.cbRxOk, ST_GOOD);
+	ultrawidelock_host_rx.rxenable_ret = DWT_SUCCESS;
+	T_OK("arm.refused_not_awaiting", !ccc_shim_rx_awaiting_poll());
+	{
+		struct ccc_shim_rx_stats st;
+
+		ccc_shim_rx_stats_get(&st);
+		T_EQ("arm.fail_counted", st.arm_fail, 1);
+		T_EQ("arm.none_armed", st.poll_arm, 0);
+	}
+	ultrawidelock_uwb_stop();
 }
