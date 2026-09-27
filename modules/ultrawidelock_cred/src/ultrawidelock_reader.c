@@ -312,6 +312,23 @@ static void stepup_sd_release(uint16_t conn)
 	}
 }
 
+/* The collected response is the device's SessionData inside a DO'53 (the
+ * reference stack's FinishStepUpResponse unwraps it the same way). Strip the
+ * wrapper in place so s_stepup_sd holds the bare SessionData both consumers
+ * open. 0 on success, -1 if the response is not exactly one DO'53. */
+static int stepup_sd_unwrap(void)
+{
+	const uint8_t *m;
+	size_t mn;
+
+	if (ultrawidelock_stepup_unwrap_do53(s_stepup_sd, s_stepup_sd_len, &m, &mn) != 0) {
+		return -1;
+	}
+	memmove(s_stepup_sd, m, mn);
+	s_stepup_sd_len = mn;
+	return 0;
+}
+
 /* Whether this step-up decides the transaction (the learn path) or only logs a
  * verdict (the bench one-shot). Without the bench option the learn path is the
  * only way a step-up starts, and the compiler folds the bench branches away --
@@ -1151,14 +1168,17 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 		 * Access Document (step-up, §8.4) and learning the key the issuer
 		 * signed. So: derive the StepUpSK channel off the block while it is
 		 * in scope, and let EXCHANGE go out. The grant waits on the verdict;
-		 * a device that presented no long-term key has nothing to learn.
+		 * a device that presented no long-term key has nothing to learn, and
+		 * one whose signaling bitmap does not advertise a document (bit 0)
+		 * is not asked for one, as the reference stack's HandleAuth1Response
+		 * does not.
 		 */
 		uint8_t issuers;
 
 		ultrawidelock_mutex_lock(&s_prov_lock);
 		issuers = s_trust.issuer_count;
 		ultrawidelock_mutex_unlock(&s_prov_lock);
-		if (issuers > 0u && r.have_device_pub &&
+		if (issuers > 0u && r.have_device_pub && (r.signaling & 0x0001u) != 0u &&
 		    ultrawidelock_stepup_derive_keys(block, s->stepup_skr, s->stepup_skd) == 0) {
 			ultrawidelock_stepup_channel_init(&s->stepup_sc, s->stepup_skr, s->stepup_skd);
 			s->stepup_active = true;
@@ -1398,13 +1418,18 @@ static void learn_reject(struct ultrawidelock_session *s, const char *why)
 static const uint8_t k_learn_element[] = {'m', 'a', 't', 't', 'e', 'r', '1'};
 
 /* Build the Access-Document DeviceRequest, seal it into a SessionData message on
- * the StepUpSK channel, and send it in an ENVELOPE APDU (§8.4). On any build/seal
- * failure the bench-armed path falls back to completing the AP so the unlock is
- * never blocked; the learn path has no unlock to protect and rejects. */
+ * the StepUpSK channel, wrap that in a DO'53 and send it in an ENVELOPE APDU
+ * (§8.4). The DO'53 is not optional: the reference stack sends it on BLE as on
+ * NFC (session.cpp StartStepUpExchange), and a Watch answers bare SessionData
+ * with GeneralError 0x00. On any build/seal failure the bench-armed path falls
+ * back to completing the AP so the unlock is never blocked; the learn path has
+ * no unlock to protect and rejects. */
 static void stepup_send_request(struct ultrawidelock_session *s)
 {
-	uint8_t devreq[128], sd[256], apdu[300];
-	size_t drn, sdn, an;
+	/* apdu doubles as the sealed SessionData's scratch until its DO'53 copy is
+	 * taken: no third buffer on a BLE-host stack the Zephyr port sizes at 4 KiB. */
+	uint8_t devreq[128], do53[256], apdu[300];
+	size_t drn, sdn, dn, an;
 
 	if (s_stepup_sd_owner != STEPUP_SD_FREE && s_stepup_sd_owner != s->conn_handle) {
 		if (stepup_is_learn(s->learn_pending)) {
@@ -1438,8 +1463,10 @@ static void stepup_send_request(struct ultrawidelock_session *s)
 	}
 
 	if (built != 0 ||
-	    ultrawidelock_stepup_seal_sessiondata(&s->stepup_sc, devreq, drn, sd, sizeof(sd), &sdn) != 0 ||
-	    ultrawidelock_stepup_build_envelope(sd, sdn, 0, apdu, sizeof(apdu), &an) != 0) {
+	    ultrawidelock_stepup_seal_sessiondata(&s->stepup_sc, devreq, drn, apdu, sizeof(apdu),
+						  &sdn) != 0 ||
+	    ultrawidelock_stepup_wrap_do53(apdu, sdn, do53, sizeof(do53), &dn) != 0 ||
+	    ultrawidelock_stepup_build_envelope(do53, dn, 0, apdu, sizeof(apdu), &an) != 0) {
 		if (stepup_is_learn(s->learn_pending)) {
 			learn_reject(s, "document request not built");
 			return;
@@ -1765,6 +1792,10 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 			learn_reject(s, "no document presented");
 			return;
 		}
+		if (stepup_sd_unwrap() != 0) {
+			learn_reject(s, "document not in a DO'53");
+			return;
+		}
 		learn_decide(s);
 		return;
 	}
@@ -1775,7 +1806,8 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 	/* Complete the AP + arm ranging FIRST so the verify never delays the unlock,
 	 * then hand the document to the worker. */
 	gated_complete_ap(s);
-	if (s_stepup_sd_owner == s->conn_handle && s_stepup_sd_len > 0) {
+	if (s_stepup_sd_owner == s->conn_handle && s_stepup_sd_len > 0 &&
+	    stepup_sd_unwrap() == 0) {
 		stepup_submit_job(s);
 	} else {
 		s->stepup_active = false;

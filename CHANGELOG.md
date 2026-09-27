@@ -109,6 +109,16 @@ tag was cut.
   (`CONFIG_ULTRAWIDELOCK_CRED_STEPUP=y` in `prj.conf` and
   `sdkconfig.defaults`). `prov` lists the issuer keys and, per anchor, the
   issuer that vouched for it.
+- **The Watch answered every document request with `GeneralError 0x00`.**
+  The reader sent its DeviceRequest as bare SessionData; the reference stack
+  wraps it in a DO'53 on BLE as on NFC and unwraps the device's answer the
+  same way, and a Watch refuses anything else. Field log: `device
+  GeneralError 0x00 in phase SENT_STEPUP` on every approach, the Watch
+  reconnecting about every 3 s. The request and the collected response now
+  carry the DO'53. The reader also reads the AUTH1 signaling bitmap (tag
+  0x5E, which it had looked for under 0x91 and then ignored) and asks only a
+  device that advertises a document (bit 0), as the reference does; any
+  other unknown key is rejected at AUTH1 as before.
 
 ### Size limits in the credential reader fail loudly
 
