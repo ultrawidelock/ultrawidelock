@@ -2,62 +2,127 @@
    UltraWideLock — landing.css
    The landing page only. Requires the tokens and components.css.
 
-   The page is laid out as an instrument: a measured left gutter, a scope band
-   carrying a live ranging round, and readouts in tabular mono. Nothing here
-   invents a colour; the two signals are --path-first (direct, trusted) and
-   --path-late (obstructed, or carrying a relay's delay), which is the same
-   distinction the shipped classifier makes.
+   A marketing page with one instrument in it. The hero opens with a claim and
+   then the measurement that backs it: a live ranging round computed from the
+   firmware's own constants. Everything after the hero is short, and the
+   reference material that used to follow it lives in docs/specification.md.
+
+   Nothing here invents a colour; the two signals are --path-first (direct,
+   trusted) and --path-late (obstructed, or carrying a relay's delay), which
+   is the same distinction the shipped classifier makes.
    ========================================================================= */
 
-/* ------------------------------------------------------------- the rail --- */
-/* A hairline ruler down the left edge, ticked every 4rem. The whole project
-   is a ruler, so the page is measured. It is decoration only in the sense
-   that a scale on a drawing is decoration: it says the thing is to size.
-   Below --bp-rail there is no width to spare and it is dropped entirely. */
-.railed{position:relative}
-@media (min-width:64rem){
-  .railed{padding-left:var(--rail)}
-  .railed::before{content:"";position:absolute;left:0;top:0;bottom:0;
-    width:var(--bw-hair);background:var(--hairline)}
-  .railed::after{content:"";position:absolute;left:0;top:0;bottom:0;
-    width:9px;
-    background-image:repeating-linear-gradient(
-      to bottom,var(--line) 0 1px,transparent 1px 4rem);
-    opacity:.5}
+/* ---------------------------------------------------------- the field ---- */
+/* The light field is the physical layer: hero.js draws ranging rings on a
+   fixed canvas behind the page while the hero is on screen. Glass surfaces
+   reveal it; code, readouts and captures stay opaque enough to read. */
+:root{
+  --glass-fill:color-mix(in srgb,var(--surface) 70%,transparent);
+  --glass-fill-strong:color-mix(in srgb,var(--surface) 84%,transparent);
+  --glass-spec:color-mix(in srgb,var(--strong) 20%,transparent);
+  --glass-glow:color-mix(in srgb,var(--accent) 4%,transparent);
+  --glass-blur:24px;
 }
+
+.landing-page{position:relative;isolation:isolate;overflow-x:hidden}
+.landing-page #main,.landing-page .footer{position:relative;z-index:2}
+.landing-page .footer{margin-top:0;background:var(--surface)}
+
+.uwb-field,.uwb-vignette{position:fixed;inset:0;pointer-events:none}
+.uwb-field{z-index:0;width:100vw;height:100vh;max-width:none}
+.uwb-vignette{z-index:1;background:
+  radial-gradient(80% 58% at 50% 5%,transparent 45%,color-mix(in srgb,var(--ground) 32%,transparent) 100%),
+  linear-gradient(to bottom,transparent 62%,var(--ground) 100%)}
+
+/* Every glass surface on the page: the instrument, the code blocks, the
+   pillars and the board tiles. hero.js writes --gx/--gy from the pointer so
+   the highlight follows the reader across each panel. */
+.landing-page .glass-panel{
+  background:
+    radial-gradient(720px circle at var(--gx,50%) var(--gy,-20%),var(--glass-glow),transparent 64%),
+    var(--glass-fill);
+  border:var(--bw-1) solid var(--hairline);border-top-color:var(--glass-spec);
+  box-shadow:var(--shadow-inset),var(--shadow-3);
+  -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(145%);
+  backdrop-filter:blur(var(--glass-blur)) saturate(145%)}
+
+/* The landing nav begins as part of the field, then gains material once the
+   reader leaves the opening frame. Other pages keep the shared solid bar. */
+.landing-page .topbar{position:fixed;inset:0 0 auto;z-index:var(--z-header);
+  background:transparent;border-bottom-color:transparent;
+  transition:height var(--dur-3) var(--ease-out),
+    background var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out),
+    backdrop-filter var(--dur-3) var(--ease-out)}
+.landing-page .topbar.is-scrolled{
+  background:color-mix(in srgb,var(--surface) 70%,transparent);
+  border-bottom-color:var(--hairline);box-shadow:var(--shadow-2);
+  -webkit-backdrop-filter:blur(18px) saturate(145%);
+  backdrop-filter:blur(18px) saturate(145%)}
 
 /* --------------------------------------------------------------- hero ----- */
-.hero{border-bottom:var(--border-hair);background:var(--surface);
-  padding:var(--sp-12) 0 0}
-.hero-copy{max-width:var(--page-max);margin:0 auto;
-  padding:0 var(--sp-8) var(--sp-8);
-  display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);
-  gap:var(--sp-6) var(--sp-12);align-items:end}
-.hero h1{margin:0;font-size:var(--fs-1000);line-height:var(--lh-tight);
-  letter-spacing:var(--tr-display);color:var(--strong);
-  max-width:18ch;text-wrap:balance}
-.hero .lede{margin:0}
-.hero .cta{grid-column:1/-1;margin-top:var(--sp-2)}
-@media (max-width:64rem){
-  .hero-copy{grid-template-columns:minmax(0,1fr);align-items:start}
-  .hero h1{font-size:var(--fs-900);max-width:22ch}
-}
+/* Centred: one claim, one paragraph, the buttons, and the instrument under
+   them. The two blurred discs are the only colour that is not a token used
+   as ink -- the first-path tint high and right, the late-path tint low and
+   left, so the page is lit by the same two signals the scope draws. */
+/* overflow-x:clip, not hidden: the two discs below hang past the viewport
+   edge, and hidden on the body still lets a programmatic or momentum scroll
+   drift sideways into them. clip refuses the scroll without making the hero
+   a scroll container, so the sticky and fixed chrome is unaffected. */
+.hero{position:relative;overflow-x:clip;
+  padding:clamp(6.5rem,14vh,9.5rem) 0 clamp(3rem,7vh,5rem)}
+.hero::before,.hero::after{content:"";position:absolute;pointer-events:none;
+  border-radius:50%;filter:blur(2px);z-index:0}
+.hero::before{width:min(40rem,74vw);aspect-ratio:1;top:-4rem;right:-14rem;
+  background:radial-gradient(circle,var(--accent-tint),transparent 68%)}
+.hero::after{width:min(28rem,62vw);aspect-ratio:1;top:30rem;left:-12rem;
+  background:radial-gradient(circle,var(--path-late-tint),transparent 70%)}
+
+.hero-copy{position:relative;z-index:2;max-width:56rem;margin:0 auto;
+  padding:0 var(--sp-6) clamp(2.6rem,6vh,4.2rem);
+  display:flex;flex-direction:column;align-items:center;text-align:center;
+  gap:0}
+.hero .eyebrow{margin-bottom:var(--sp-6)}
+.hero h1{margin:0 0 var(--sp-6);
+  font-size:clamp(3.15rem,8.2vw,7rem);line-height:.94;letter-spacing:-.048em;
+  font-weight:var(--fw-bold);color:var(--strong);text-wrap:balance}
+/* The glow under the claim reads as light on the dark theme and as a smudge
+   behind black type on the light one, so it is dark-only. */
+:root[data-theme="dark"] .hero h1{
+  filter:drop-shadow(0 18px 34px color-mix(in srgb,var(--accent) 14%,transparent))}
+/* The claim's second line is lit in the first-path colour: it is the part
+   the measurement proves. background-clip keeps it one run of type. */
+.hero h1 .lit{color:var(--accent);
+  background:linear-gradient(112deg,var(--accent-ink) 0%,var(--accent) 46%,
+    var(--accent-hover) 82%,var(--strong) 100%);
+  background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero .lede{margin:0 0 var(--sp-8);max-width:38rem;
+  font-size:clamp(1.05rem,1.35vw,1.25rem);line-height:var(--lh-normal);
+  text-wrap:pretty}
+.hero .cta{justify-content:center;gap:var(--sp-3)}
+.landing-page .cta .btn{border-radius:var(--r-pill);padding-inline:var(--sp-6)}
 
 /* -------------------------------------------------------------- scope ----- */
-/* The instrument. Full-bleed dark band so it reads as a piece of equipment
-   set into the page rather than a picture placed on it. */
-.scope-band{background:var(--scope);border-top:var(--border-hair);
-  border-bottom:var(--border-hair)}
-.scope-in{max-width:var(--page-max);margin:0 auto;padding:var(--sp-6) var(--sp-8)}
+/* The instrument. A glass panel set into the page rather than a picture
+   placed on it. */
+.scope-band{position:relative;z-index:2;padding:0 var(--sp-6)}
+.scope-in{max-width:var(--page-max);margin:0 auto;overflow:hidden;
+  padding:clamp(1rem,3vw,2rem);border-radius:calc(var(--r-xl) + var(--sp-1))}
 /* --muted, not --faint, for every label in this band. The band's surface is
    --scope, and --faint measures 4.22:1 there on the light theme against the
    4.5 small text needs; --muted is 5.53:1. The SVG labels below already
    carried this fix -- these are the HTML ones beside them. */
 .scope-head{display:flex;align-items:center;gap:var(--sp-3);
-  margin-bottom:var(--sp-2);
+  margin-bottom:var(--sp-4);
   font-family:var(--font-mono);font-size:var(--fs-100);
   text-transform:uppercase;letter-spacing:var(--tr-caps);color:var(--muted)}
 .scope-head .sp{flex:1}
+.scope-live{display:inline-flex;align-items:center;gap:var(--sp-2);color:var(--accent-ink);
+  letter-spacing:var(--tr-caps)}
+.scope-live i{width:.42rem;height:.42rem;border-radius:var(--r-pill);background:var(--accent);
+  box-shadow:var(--accent-glow);animation:scope-live 2.2s ease-in-out infinite}
+@keyframes scope-live{50%{opacity:.28}}
 
 /* The instrument is 3.6:1 and full of 10px type. Squeezed into a phone it
    becomes an illegible smudge, so below its natural width it keeps a minimum
@@ -65,7 +130,9 @@
    sideways -- only this one element does, inside its own box. */
 .scope-frame{overflow-x:auto;overflow-y:hidden;
   scrollbar-width:thin;scrollbar-color:var(--line) transparent;
-  overscroll-behavior-x:contain}
+  overscroll-behavior-x:contain;
+  padding:var(--sp-3);border:var(--border-hair);border-radius:var(--r-lg);
+  background:color-mix(in srgb,var(--scope) 88%,transparent)}
 #hero-scope{display:block;width:100%;height:auto;min-width:38rem;
   touch-action:pan-y;cursor:grab;overflow:visible}
 #hero-scope.dragging{cursor:grabbing}
@@ -414,221 +481,230 @@
   .scope-read .v{font-size:var(--fs-600)}
 }
 
-/* --------------------------------------------------------- stats strip --- */
-.strip{max-width:var(--page-max);margin:0 auto;padding:var(--sp-5) var(--sp-8);
-  display:flex;flex-wrap:wrap;gap:var(--sp-10)}
-.strip .stat-b b{font-size:var(--fs-700)}
-
-/* ------------------------------------------------------------ sections --- */
-.section-h .n{font-family:var(--font-mono);font-size:var(--fs-200);
-  color:var(--faint);letter-spacing:var(--tr-caps)}
-
-/* Two-column explanatory block: prose left, evidence right. */
-.split{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);
-  gap:var(--sp-10);align-items:start}
-@media (max-width:64rem){.split{grid-template-columns:minmax(0,1fr);gap:var(--sp-6)}}
-
-.cardgrid{display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));gap:var(--sp-4)}
-.card b.card-t{display:block;color:var(--strong);font-size:var(--fs-600);
-  margin-bottom:var(--sp-2);letter-spacing:var(--tr-heading)}
-
-/* ---------------------------------------------------------- the ladder --- */
-/* The unlock sequence. Numbered because it genuinely is a sequence -- these
-   are protocol steps in the order they happen, and the order is the content. */
-.ladder{list-style:none;margin:0 0 var(--sp-8);padding:0;
-  border-top:var(--border-hair)}
-.ladder li{display:grid;grid-template-columns:2.5rem 9rem minmax(0,1fr);
-  gap:var(--sp-4);align-items:baseline;
-  padding:var(--sp-4) var(--sp-2);border-bottom:var(--border-hair)}
-.ladder .n{font-family:var(--font-mono);font-size:var(--fs-200);
-  color:var(--path-first-ink)}
-.ladder .what{font-family:var(--font-mono);font-size:var(--fs-300);
-  color:var(--strong)}
-.ladder .how{color:var(--muted);font-size:var(--fs-400)}
-@media (max-width:44rem){
-  .ladder li{grid-template-columns:2.5rem minmax(0,1fr)}
-  .ladder .how{grid-column:2}
-}
-
-/* -------------------------------------------------------- signal glass --- */
-/* The light field is the physical layer. Glass surfaces reveal it; tables,
-   code and readouts remain opaque enough to read as measurements. */
-:root{
-  --glass-fill:color-mix(in srgb,var(--surface) 70%,transparent);
-  --glass-fill-strong:color-mix(in srgb,var(--surface) 84%,transparent);
-  --glass-spec:color-mix(in srgb,var(--strong) 20%,transparent);
-  --glass-glow:color-mix(in srgb,var(--accent) 4%,transparent);
-  --glass-blur:24px;
-}
-
-.landing-page{position:relative;isolation:isolate;overflow-x:hidden}
-.landing-page #main,.landing-page .footer{position:relative;z-index:2}
-.landing-page .footer{margin-top:var(--sp-16);background:var(--surface)}
-
-.uwb-field,.uwb-vignette{position:fixed;inset:0;pointer-events:none}
-.uwb-field{z-index:0;width:100vw;height:100vh;max-width:none}
-.uwb-vignette{z-index:1;background:
-  radial-gradient(80% 58% at 50% 5%,transparent 45%,color-mix(in srgb,var(--ground) 32%,transparent) 100%),
-  linear-gradient(to bottom,transparent 62%,var(--ground) 100%)}
-
-/* The landing nav begins as part of the field, then gains material once the
-   reader leaves the opening frame. Other pages keep the shared solid bar. */
-.landing-page .topbar{position:fixed;inset:0 0 auto;z-index:var(--z-header);
-  background:transparent;border-bottom-color:transparent;
-  transition:height var(--dur-3) var(--ease-out),
-    background var(--dur-3) var(--ease-out),
-    border-color var(--dur-3) var(--ease-out),
-    box-shadow var(--dur-3) var(--ease-out),
-    backdrop-filter var(--dur-3) var(--ease-out)}
-.landing-page .topbar.is-scrolled{
-  background:color-mix(in srgb,var(--surface) 70%,transparent);
-  border-bottom-color:var(--hairline);box-shadow:var(--shadow-2);
-  -webkit-backdrop-filter:blur(18px) saturate(145%);
-  backdrop-filter:blur(18px) saturate(145%)}
-
-.landing-page .hero{position:relative;min-height:100svh;
-  padding:clamp(7rem,12vh,10rem) 0 clamp(3rem,7vh,5.5rem);
-  border:0;background:transparent}
-.landing-page .hero::before,.landing-page .hero::after{content:"";
-  position:absolute;pointer-events:none;border-radius:50%;filter:blur(2px)}
-.landing-page .hero::before{width:min(38rem,72vw);aspect-ratio:1;top:2rem;right:-12rem;
-  background:radial-gradient(circle,var(--accent-tint),transparent 68%)}
-.landing-page .hero::after{width:min(28rem,62vw);aspect-ratio:1;top:28rem;left:-12rem;
-  background:radial-gradient(circle,var(--path-late-tint),transparent 70%)}
-.landing-page .hero-copy{position:relative;z-index:2;padding-bottom:clamp(3rem,7vh,5rem);
-  grid-template-columns:minmax(0,1fr);gap:var(--sp-8)}
-.landing-page .hero h1{font-size:clamp(3.4rem,7.2vw,7rem);line-height:.95;
-  letter-spacing:-.055em;max-width:12.5ch}
-.landing-page .hero h1.hero-wordmark{position:relative;display:inline-block;max-width:none;
-  margin-bottom:var(--sp-6);font-family:var(--font-mono);font-size:clamp(3.6rem,7.7vw,7.7rem);
-  line-height:.86;letter-spacing:-.095em;font-weight:var(--fw-bold);white-space:nowrap;
-  filter:drop-shadow(0 18px 34px color-mix(in srgb,var(--accent) 16%,transparent))}
-.landing-page .hero-wordmark::after{content:"";position:absolute;left:.04em;bottom:-.22em;
-  width:42%;height:var(--bw-2);border-radius:var(--r-pill);
-  background:linear-gradient(90deg,var(--accent),var(--accent-line),transparent);
-  box-shadow:0 0 20px color-mix(in srgb,var(--accent) 38%,transparent)}
-.landing-page .word-ultra{color:var(--accent);background:
-  linear-gradient(112deg,var(--accent-ink) 0%,var(--accent) 48%,var(--accent-hover) 76%,var(--strong) 100%);
-  background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.landing-page .word-ultra::first-letter{font-size:1.13em}
-.landing-page .word-lock{color:var(--strong)}
-.landing-page .hero-tagline{margin:0;font-size:clamp(1.7rem,3vw,2.8rem);
-  line-height:1.05;letter-spacing:-.045em;color:var(--ink);font-weight:var(--fw-regular)}
-.landing-page .hero-tagline strong{color:var(--strong);font-weight:var(--fw-bold)}
-.landing-page .hero .cta{gap:var(--sp-3)}
-.landing-page .hero .btn{border-radius:var(--r-pill);padding-inline:var(--sp-6)}
-
-.landing-page .scope-band{position:relative;z-index:2;background:transparent;border:0;
-  padding:0 var(--sp-6)}
-.landing-page .glass-panel,.landing-page #main > .page{
-  background:
-    radial-gradient(720px circle at var(--gx,50%) var(--gy,-20%),var(--glass-glow),transparent 64%),
-    var(--glass-fill);
-  border:var(--bw-1) solid var(--hairline);border-top-color:var(--glass-spec);
-  box-shadow:var(--shadow-inset),var(--shadow-3);
-  -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(145%);
-  backdrop-filter:blur(var(--glass-blur)) saturate(145%)}
-.landing-page .scope-in{border-radius:calc(var(--r-xl) + var(--sp-1));
-  padding:clamp(1rem,3vw,2rem);overflow:hidden}
-.landing-page .scope-head{margin-bottom:var(--sp-4)}
-.scope-live{display:inline-flex;align-items:center;gap:var(--sp-2);color:var(--accent-ink);
-  letter-spacing:var(--tr-caps)}
-.scope-live i{width:.42rem;height:.42rem;border-radius:var(--r-pill);background:var(--accent);
-  box-shadow:var(--accent-glow);animation:scope-live 2.2s ease-in-out infinite}
-@keyframes scope-live{50%{opacity:.28}}
-.landing-page .scope-frame{padding:var(--sp-3);border:var(--border-hair);
-  border-radius:var(--r-lg);background:color-mix(in srgb,var(--scope) 88%,transparent)}
-
-.phase-track{display:flex;gap:var(--sp-2);margin-top:var(--sp-4);overflow-x:auto;
-  padding-bottom:var(--sp-1);scrollbar-width:thin;scrollbar-color:var(--line) transparent}
-.phase-chip{display:inline-flex;align-items:center;gap:var(--sp-2);flex:none;
-  padding:var(--sp-1) var(--sp-3);border:var(--border-hair);border-radius:var(--r-pill);
-  background:color-mix(in srgb,var(--scope) 74%,transparent);color:var(--faint);
-  font-family:var(--font-mono);font-size:var(--fs-100);letter-spacing:.06em;
-  text-transform:uppercase;transition:color var(--dur-2) var(--ease-out),
-  border-color var(--dur-2) var(--ease-out),background var(--dur-2) var(--ease-out)}
-.phase-chip i{font-style:normal;opacity:.52}
-.phase-chip.is-done{color:var(--muted);border-color:var(--line)}
-.phase-chip.is-done::after{content:"✓";color:var(--accent)}
-.phase-chip.is-active{color:var(--accent-ink);border-color:var(--accent-line);
-  background:var(--accent-tint);box-shadow:0 0 22px -10px var(--accent)}
-.phase-chip.is-alert{color:var(--path-late);border-color:var(--path-late-line);
-  background:var(--path-late-tint)}
-
 .landing-page .scope-ctl{border-top-color:var(--hairline)}
 .landing-page .scope-read{gap:var(--sp-2)}
 .landing-page .scope-read .r{min-width:7rem;padding:var(--sp-2) var(--sp-3);
   border:var(--border-hair);border-radius:var(--r-md);background:var(--scope)}
 .landing-page .scope-verdict{min-height:3.7rem;padding-inline:var(--sp-5);
   background:var(--scope)}
-.landing-page .strip{position:relative;z-index:2;justify-content:center;gap:var(--sp-3);
-  padding-top:var(--sp-4)}
-.landing-page .strip .stat-b{min-width:12rem;padding:var(--sp-3) var(--sp-5);
+.scope-foot a{white-space:nowrap}
+
+/* --------------------------------------------------------- stats strip --- */
+.strip{position:relative;z-index:2;max-width:var(--page-max);margin:0 auto;
+  padding:var(--sp-5) var(--sp-8) 0;
+  display:flex;flex-wrap:wrap;justify-content:center;gap:var(--sp-3)}
+.strip .stat-b{min-width:12rem;padding:var(--sp-3) var(--sp-5);
   border:var(--border-hair);border-radius:var(--r-pill);
   background:var(--glass-fill-strong);box-shadow:var(--shadow-inset);
   -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
-.landing-page .strip .stat-b b{display:block;color:var(--strong)}
-.landing-page .strip .stat-b span{color:var(--muted);font-size:var(--fs-300)}
+.strip .stat-b b{display:block;color:var(--strong);font-size:var(--fs-700)}
+.strip .stat-b span{color:var(--muted);font-size:var(--fs-300)}
 
-.landing-page #main > .page{margin-top:var(--sp-8);
-  border-radius:calc(var(--r-xl) + var(--sp-1));overflow:hidden}
-.landing-page #main > .page:first-of-type{margin-top:var(--sp-4)}
-.landing-page .section-h{margin-top:0}
-.landing-page .section-h .n{display:inline-grid;place-items:center;width:2.2rem;height:2.2rem;
-  border:var(--border);border-radius:var(--r-pill);color:var(--accent-ink);
-  background:var(--accent-tint)}
-.landing-page .section-h h2{font-size:clamp(2rem,4vw,3.6rem);letter-spacing:-.035em;
-  text-wrap:balance}
-.landing-page .section-h .rule{background:linear-gradient(90deg,var(--accent-line),transparent)}
-.landing-page .prewrap,.landing-page .tablewrap,.landing-page .figure{
-  box-shadow:var(--shadow-inset),var(--shadow-2)}
-.landing-page .cardgrid .card{position:relative;overflow:hidden;
+/* ------------------------------------------------------------ sections --- */
+/* Open sections on the field, a hairline between them, and a faint wash of
+   the first-path colour that alternates sides so the page has a rhythm
+   without any section needing a box of its own. */
+.sec{position:relative;overflow-x:clip;padding:clamp(4.5rem,9vw,7.5rem) 0}
+.sec + .sec{border-top:var(--border-hair)}
+.sec::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(52% 60% at 12% 0%,var(--accent-tint),transparent 70%);
+  opacity:.55}
+.sec:nth-of-type(even)::before{
+  background:radial-gradient(52% 60% at 88% 0%,var(--accent-tint),transparent 70%)}
+.sec-in{position:relative;z-index:1;max-width:var(--page-max);margin:0 auto;
+  padding:0 var(--sp-8)}
+.sec-h{max-width:46rem;margin:0 0 clamp(2rem,4vw,3.2rem)}
+.sec-h .eyebrow{margin-bottom:var(--sp-4)}
+.sec-h h2{margin:0 0 var(--sp-4);font-size:clamp(2rem,4.2vw,3.4rem);
+  line-height:1.02;letter-spacing:-.035em;color:var(--strong);text-wrap:balance}
+.sec-h .lede{margin:0;text-wrap:pretty}
+
+/* ---------------------------------------------------------- get started -- */
+.start-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(21rem,1fr));
+  gap:var(--sp-5)}
+/* A code block on glass: the wrapper carries the border and the material,
+   so the caption and the pre give up their own. */
+.landing-page .prewrap.glass-panel{margin:0;padding:0;border-radius:var(--r-lg);
+  overflow:hidden}
+.landing-page .prewrap.glass-panel .cap{border:0;border-bottom:var(--border-hair);
+  border-radius:0;background:transparent;padding:var(--sp-3) var(--sp-5)}
+.landing-page .prewrap.glass-panel pre{border:0;border-radius:0;
+  background:transparent;box-shadow:none;padding:var(--sp-5)}
+.cap-r{margin-left:auto}
+
+.next{list-style:none;margin:var(--sp-6) 0 0;padding:0;
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:var(--sp-3)}
+.next a{display:flex;flex-direction:column;gap:var(--sp-1);height:100%;
+  padding:var(--sp-4) var(--sp-5);border:var(--border-hair);border-radius:var(--r-lg);
+  background:var(--glass-fill);text-decoration:none;
+  transition:border-color var(--dur-2) var(--ease-out),
+    background var(--dur-2) var(--ease-out),transform var(--dur-2) var(--ease-out)}
+.next a b{color:var(--strong);font-weight:var(--fw-medium)}
+.next a b::after{content:"\2192";margin-left:.4em;color:var(--accent-ink);
+  display:inline-block;transition:transform var(--dur-2) var(--ease-out)}
+.next a span{color:var(--muted);font-size:var(--fs-300);line-height:var(--lh-normal)}
+.next a:hover{border-color:var(--accent-line);background:var(--accent-tint)}
+.next a:hover b::after{transform:translateX(3px)}
+
+/* ------------------------------------------------------------- pillars --- */
+.pillars{list-style:none;margin:0;padding:0;
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(17rem,1fr));gap:var(--sp-4)}
+.pillars li{padding:var(--sp-6);border-radius:var(--r-xl);
+  transition:border-color var(--dur-3) var(--ease-out),transform var(--dur-3) var(--ease-out)}
+.pillars li:hover{border-color:var(--accent-line);transform:translateY(-3px)}
+.p-ico{display:grid;place-items:center;width:2.6rem;height:2.6rem;
+  margin-bottom:var(--sp-5);border:var(--border-accent);border-radius:var(--r-md);
+  background:var(--accent-tint);color:var(--accent-ink);
+  box-shadow:0 0 22px -10px var(--accent)}
+.p-ico svg{width:1.4rem;height:1.4rem;display:block}
+.pillars b{display:block;margin-bottom:var(--sp-2);color:var(--strong);
+  font-size:var(--fs-600);letter-spacing:var(--tr-heading);text-wrap:balance}
+.pillars p{margin:0;color:var(--muted);line-height:var(--lh-normal)}
+.pillars em{color:var(--ink);font-style:normal;font-weight:var(--fw-medium)}
+
+/* ---------------------------------------------------------------- flow --- */
+/* The unlock sequence as one line with five stations on it. The line is the
+   content: these are protocol steps in the order they happen. One pulse runs
+   the length of it, the same way a round runs the lanes in the hero. */
+.flow{list-style:none;margin:0 0 var(--sp-8);padding:0;position:relative;
+  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--sp-5)}
+.flow::before{content:"";position:absolute;left:0;right:0;top:1.1rem;height:1px;
+  background:linear-gradient(90deg,var(--accent-line),var(--line) 55%,transparent)}
+.flow::after{content:"";position:absolute;left:0;right:0;top:calc(1.1rem - 1px);
+  height:3px;border-radius:var(--r-pill);
+  background:linear-gradient(90deg,transparent 0 40%,var(--accent) 50%,transparent 60% 100%);
+  background-size:320% 100%;background-position:100% 0;
+  animation:flow-run 5.2s linear infinite}
+@keyframes flow-run{from{background-position:100% 0}to{background-position:0% 0}}
+.flow li{position:relative;padding-top:var(--sp-10)}
+.flow .n{position:absolute;top:0;left:0;display:inline-grid;place-items:center;
+  width:2.2rem;height:2.2rem;border:var(--border-accent);border-radius:var(--r-pill);
+  background:var(--ground);color:var(--accent-ink);
+  font-family:var(--font-mono);font-size:var(--fs-200);font-variant-numeric:tabular-nums;
+  box-shadow:0 0 0 6px var(--ground)}
+.flow b{display:block;margin-bottom:var(--sp-2);color:var(--strong);
+  font-size:var(--fs-600);letter-spacing:var(--tr-heading)}
+.flow li > span:not(.n){display:block;color:var(--muted);font-size:var(--fs-400);
+  line-height:var(--lh-normal);text-wrap:pretty}
+
+/* ------------------------------------------------------------- browser --- */
+.cardgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));gap:var(--sp-4)}
+.cardgrid.duo{grid-template-columns:repeat(auto-fit,minmax(21rem,1fr))}
+.card b.card-t{display:block;color:var(--strong);font-size:var(--fs-700);
+  margin-bottom:var(--sp-2);letter-spacing:var(--tr-heading)}
+.landing-page .cardgrid .card{position:relative;overflow:hidden;padding:var(--sp-8);
+  border-radius:var(--r-xl);
   background:var(--glass-fill-strong);border-top-color:var(--glass-spec);
   box-shadow:var(--shadow-inset),var(--shadow-2);
   transition:transform var(--dur-3) var(--ease-out),border-color var(--dur-3) var(--ease-out),
     box-shadow var(--dur-3) var(--ease-out)}
 .landing-page .cardgrid .card:hover{transform:translateY(-4px);border-color:var(--accent-line);
   box-shadow:var(--shadow-inset),var(--shadow-3)}
-.landing-page .ladder li{transition:background var(--dur-2) var(--ease-out),
-  transform var(--dur-2) var(--ease-out)}
-.landing-page .ladder li:hover{background:var(--accent-tint);transform:translateX(var(--sp-1))}
+.landing-page .card .range-viz{margin-top:var(--sp-6);min-height:9.5rem}
+.flash-demo{display:flex;flex-direction:column;justify-content:center;gap:var(--sp-3);
+  margin-top:var(--sp-6);min-height:9.5rem;padding:var(--sp-6);
+  border:var(--border);border-radius:var(--r-lg);background:var(--scope);
+  box-shadow:var(--shadow-inset)}
 
+/* ------------------------------------------------------------ hardware --- */
+.proof{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);
+  gap:var(--sp-6);align-items:stretch}
+.proof-fig{margin:0}
+.proof-fig img{display:block;width:100%;height:auto;
+  border:var(--border-hair);border-radius:var(--r-xl);box-shadow:var(--shadow-3)}
+/* One capture per theme. data-theme is always set on this page (the template
+   carries it, and the boot script overrides it from storage), so the light
+   image is simply whatever is not dark. */
+.only-dark{display:none}
+:root[data-theme="dark"] .only-dark{display:block}
+:root[data-theme="dark"] .only-light{display:none}
+.boards{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--sp-3);
+  height:100%}
+.boards li{padding:var(--sp-5) var(--sp-6);border-radius:var(--r-lg);
+  transition:border-color var(--dur-3) var(--ease-out)}
+.boards li:hover{border-color:var(--accent-line)}
+.boards b{display:block;color:var(--strong);font-size:var(--fs-600);
+  letter-spacing:var(--tr-heading)}
+.boards .chip{display:inline-block;margin:var(--sp-1) 0 var(--sp-3);
+  font-family:var(--font-mono);font-size:var(--fs-200);color:var(--accent-ink);
+  letter-spacing:.04em}
+.boards p{margin:0;color:var(--muted);font-size:var(--fs-400);line-height:var(--lh-normal)}
+/* The way to the rest of the numbers, as the last tile in the column so the
+   list stands as tall as the capture beside it. */
+.boards-more{margin-top:auto}
+.boards-more a{display:flex;flex-direction:column;gap:var(--sp-2);
+  padding:var(--sp-5) var(--sp-6);border:var(--border-hair);border-radius:var(--r-lg);
+  background:var(--accent-tint);text-decoration:none;
+  transition:border-color var(--dur-2) var(--ease-out),background var(--dur-2) var(--ease-out)}
+.boards-more a span{color:var(--muted);font-size:var(--fs-400);line-height:var(--lh-normal)}
+.boards-more a b{color:var(--accent-ink);font-weight:var(--fw-medium)}
+.boards-more a b::after{content:"\2192";margin-left:.4em;display:inline-block;
+  transition:transform var(--dur-2) var(--ease-out)}
+.boards-more a:hover{border-color:var(--accent-line)}
+.boards-more a:hover b::after{transform:translateX(3px)}
+
+/* -------------------------------------------------------------- closer --- */
+.closer{padding-bottom:clamp(5rem,10vw,8rem)}
+.closer .sec-h{max-width:44rem;margin-inline:auto;text-align:center}
+.closer .sec-h .lede{margin-inline:auto}
+.closer .cta{justify-content:center}
+.closer .fine{margin:var(--sp-8) auto 0;max-width:40rem;text-align:center;
+  font-size:var(--fs-200);line-height:var(--lh-normal);color:var(--faint)}
+
+/* ------------------------------------------------------------ fallbacks -- */
 @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-  .landing-page .glass-panel,.landing-page #main > .page,
-  .landing-page .topbar.is-scrolled{background:var(--surface)}
+  .landing-page .glass-panel,.landing-page .cardgrid .card,
+  .landing-page .topbar.is-scrolled,.next a{background:var(--surface)}
 }
 @media (prefers-reduced-transparency:reduce){
-  .landing-page .glass-panel,.landing-page #main > .page,
-  .landing-page .topbar.is-scrolled,.landing-page .strip .stat-b{
+  .landing-page .glass-panel,.landing-page .cardgrid .card,
+  .landing-page .topbar.is-scrolled,.strip .stat-b,.next a{
     -webkit-backdrop-filter:none;backdrop-filter:none;background:var(--surface)}
 }
 @media (prefers-reduced-motion:reduce){
   .uwb-field{display:none}
   .scope-live i{animation:none}
-  .landing-page .ladder li:hover,.landing-page .cardgrid .card:hover{transform:none}
+  .flow::after{display:none}
+  .pillars li:hover,.landing-page .cardgrid .card:hover{transform:none}
+  .next a:hover b::after{transform:none}
 }
+
+/* ----------------------------------------------------------- responsive -- */
 @media (max-width:64rem){
-  .landing-page .hero{min-height:auto;padding-top:calc(var(--topbar-h) + var(--sp-10))}
-  .landing-page .hero-copy{grid-template-columns:minmax(0,1fr)}
-  .landing-page .hero h1.hero-wordmark{font-size:clamp(3rem,11vw,5.6rem)}
+  .hero{padding-top:calc(var(--topbar-h) + var(--sp-12))}
+  .flow{grid-template-columns:repeat(auto-fit,minmax(12rem,1fr))}
+  .flow::before,.flow::after{display:none}
+  .proof{grid-template-columns:minmax(0,1fr)}
 }
 @media (max-width:44rem){
   :root{--glass-blur:16px}
-  .landing-page .hero{padding-bottom:var(--sp-8)}
-  .landing-page .hero-copy{padding-inline:var(--sp-5)}
-  .landing-page .hero h1.hero-wordmark{font-size:clamp(2.45rem,12.2vw,4.2rem);
-    letter-spacing:-.105em}
-  .landing-page .hero-tagline{font-size:clamp(1.55rem,7vw,2.15rem)}
-  .landing-page .scope-band{padding-inline:var(--sp-3)}
-  .landing-page .scope-in{border-radius:var(--r-xl);padding:var(--sp-4)}
-  .landing-page .scope-frame{margin-inline:calc(-1 * var(--sp-2));padding:var(--sp-2)}
+  .hero{padding-bottom:var(--sp-8)}
+  .hero-copy{padding-inline:var(--sp-5)}
+  .hero h1{font-size:clamp(2.7rem,13vw,4.4rem);letter-spacing:-.04em}
+  .scope-band{padding-inline:var(--sp-3)}
+  .scope-in{border-radius:var(--r-xl);padding:var(--sp-4)}
+  .scope-frame{margin-inline:calc(-1 * var(--sp-2));padding:var(--sp-2)}
   .landing-page .scope-read .r{flex:1 1 calc(50% - var(--sp-2));min-width:0}
   .landing-page .scope-verdict{width:100%;justify-content:center}
-  .landing-page .strip{padding-inline:var(--sp-3)}
-  .landing-page .strip .stat-b{width:100%;border-radius:var(--r-lg)}
-  .landing-page #main > .page{margin:var(--sp-4) var(--sp-3) 0;
-    padding-left:var(--sp-5);padding-right:var(--sp-5);border-radius:var(--r-xl)}
-  .landing-page .section-h{align-items:flex-start;gap:var(--sp-3)}
-  .landing-page .section-h .rule{display:none}
+  /* Three pills become one list: a figure and its label on one line each,
+     which is the same information in a third of the height. */
+  .strip{padding-inline:var(--sp-3);gap:0;display:grid;grid-template-columns:1fr}
+  .strip .stat-b{display:flex;align-items:baseline;justify-content:space-between;
+    gap:var(--sp-4);padding:var(--sp-3) var(--sp-5);border-radius:0;
+    border-bottom-width:0}
+  .strip .stat-b:first-child{border-radius:var(--r-lg) var(--r-lg) 0 0}
+  .strip .stat-b:last-child{border-radius:0 0 var(--r-lg) var(--r-lg);
+    border-bottom-width:var(--bw-hair)}
+  .strip .stat-b b{font-size:var(--fs-600)}
+  .strip .stat-b span{margin:0;text-align:right}
+  .sec{padding:var(--sp-16) 0}
+  .sec-in{padding:0 var(--sp-5)}
+  .sec-h h2{font-size:clamp(1.9rem,8.5vw,2.6rem)}
+  .flow{grid-template-columns:1fr;gap:var(--sp-2)}
+  .flow::before{display:block;left:1.1rem;right:auto;top:0;bottom:0;width:1px;height:auto;
+    background:linear-gradient(180deg,var(--accent-line),var(--line) 70%,transparent)}
+  .flow li{padding:0 0 var(--sp-6) 3.4rem;min-height:2.2rem}
+  .flow li:last-child{padding-bottom:0}
+  .landing-page .cardgrid .card{padding:var(--sp-6)}
+  .landing-page .cta .btn{width:100%}
 }
