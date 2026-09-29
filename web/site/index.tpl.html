@@ -13,30 +13,30 @@
 <main id="main">
 
 <!-- ==================================================================== hero
-     The page opens with the measurement, not a description of it. Everything
-     in the scope is computed from the firmware's own constants by hero.js,
-     which is why the tick count and the bound are worth reading. -->
+     One claim, two buttons, and then the measurement itself. Everything in
+     the instrument is computed from the firmware's own constants by hero.js,
+     which is why the tick count and the bound are worth reading. The
+     reference material that used to follow lives in docs/specification.md. -->
 <section class="hero">
   <div class="hero-copy">
-    <div>
-      <span class="eyebrow">UWB &middot; NFC &middot; Matter</span>
-      <h1 class="hero-wordmark" aria-label="UltraWideLock">
-        <span class="word-ultra">UltraWide</span><span class="word-lock">Lock</span>
-      </h1>
-      <p class="hero-tagline">Walk up. <strong>It Unlocks.</strong></p>
-    </div>
+    <span class="eyebrow">Open-source lock firmware &middot; UWB &middot; NFC &middot; Matter</span>
+    <h1>Walk up.<br><span class="lit">It unlocks.</span></h1>
+    <p class="lede">A smart lock that measures your phone&rsquo;s distance by time
+    of flight and opens only when you are really at the door. iPhone or
+    Apple&nbsp;Watch, on approach or on tap. Verified on the lock, with no
+    cloud in the loop.</p>
     <div class="cta">
-      <a class="btn btn-primary" href="#install">Get started</a>
-      <a class="btn" href="docs/index.html">Read the guides</a>
-      <a class="btn" href="twin/index.html">Open the digital twin</a>
+      <a class="btn btn-primary" href="#start">Get started</a>
+      <a class="btn" href="twin/index.html">Try it in your browser</a>
+      <a class="btn btn-ghost" href="https://github.com/ultrawidelock/ultrawidelock" data-ext>Source</a>
     </div>
   </div>
 
   <div class="scope-band">
     <div class="scope-in glass-panel">
       <div class="scope-head">
-        <span>DS-TWR round</span>
-        <span class="scope-live"><i aria-hidden="true"></i>live measurement</span>
+        <span>A ranging round</span>
+        <span class="scope-live"><i aria-hidden="true"></i>live</span>
         <span class="sp"></span>
         <span class="hide-narrow">drag the phone &middot; or use the slider</span>
       </div>
@@ -129,14 +129,6 @@
       </svg>
       </div>
 
-      <div class="phase-track" aria-hidden="true">
-        <span class="phase-chip is-done" id="hs-phase-ble"><i>01</i> BLE</span>
-        <span class="phase-chip is-done" id="hs-phase-auth"><i>02</i> authenticate</span>
-        <span class="phase-chip is-done" id="hs-phase-uwb"><i>03</i> range</span>
-        <span class="phase-chip is-done" id="hs-phase-gate"><i>04</i> gate</span>
-        <span class="phase-chip is-active" id="hs-phase-matter"><i>05</i> Matter</span>
-      </div>
-
       <div class="scope-ctl">
         <label for="hs-range">Distance</label>
         <input type="range" id="hs-range" min="122" max="888" step="1" value="312"
@@ -154,10 +146,10 @@
         </div>
       </div>
       <p class="scope-note" id="hs-true" hidden></p>
-      <p class="scope-foot">One timestamp tick is 15.65&nbsp;ps, which light crosses in
-      <b>4.692&nbsp;mm</b>. The bound is <code>ULTRAWIDELOCK_UNLOCK_RANGE_CM</code>.
-      A relay can add delay and nothing else, which is why arming one moves the
-      measurement away from the door rather than toward it.</p>
+      <p class="scope-foot">A relay can add delay and nothing else, so arming one
+      pushes the measurement <em>away</em> from the door. Every reading here is
+      computed from the firmware&rsquo;s own constants.
+      <a href="docs/specification.html#why-time-of-flight">How it is measured</a></p>
     </div>
   </div>
 
@@ -168,317 +160,210 @@
   </div>
 </section>
 
-<!-- ================================================================= install -->
-<section class="page railed defer-paint" id="install" style="padding-top:var(--sp-16)">
-  <div class="section-h"><span class="n">01</span><h2>Install</h2><span class="rule"></span></div>
-  <p class="lede" style="margin-bottom:var(--sp-6)" data-reveal="0">A C compiler and
-  <code>python3</code> run the whole host suite.</p>
+<!-- ============================================================= get started
+     First after the hero, because it is what a visitor came to do. One block
+     that needs nothing, one for the reference board, and three ways on. -->
+<section class="sec defer-paint" id="start">
+  <div class="sec-in">
+    <div class="sec-h" data-reveal="0">
+      <span class="eyebrow">Get started</span>
+      <h2>Clone to a passing suite in one minute.</h2>
+      <p class="lede">A C compiler and <code>python3</code> are the whole requirement.
+      No board, no toolchain, and nothing phones home.</p>
+    </div>
 
-  <div class="prewrap" data-reveal="1">
-    <div class="cap"><span>shell</span><span style="margin-left:auto">no hardware</span></div>
+    <div class="start-grid">
+      <div class="prewrap glass-panel" data-reveal="1">
+        <div class="cap"><span>shell</span><span class="cap-r">no hardware</span></div>
 <pre><code>git clone <span class="tok-string">https://github.com/ultrawidelock/ultrawidelock.git</span>
 <span class="tok-func">cd</span> ultrawidelock
 make check                  <span class="tok-comment"># 18 suites, 9,608 checks</span></code></pre>
-  </div>
-
-  <p data-reveal="2">Five commands take a Qorvo DWM3001CDK from clone to a lock on
-  the bench.</p>
-  <div class="prewrap" data-reveal="3">
-    <div class="cap"><span>shell</span><span style="margin-left:auto">DWM3001CDK</span></div>
+      </div>
+      <div class="prewrap glass-panel" data-reveal="2">
+        <div class="cap"><span>shell</span><span class="cap-r">DWM3001CDK</span></div>
 <pre><code>make dfu-key                <span class="tok-comment"># once per clone   · image-signing key</span>
 make bootstrap              <span class="tok-comment"># once per machine · NCS v3.3.0</span>
 make build                  <span class="tok-comment"># -&gt; build/cdk-matter</span>
 make flash                  <span class="tok-comment"># over the on-board J-Link</span>
 make monitor                <span class="tok-comment"># console, over RTT</span></code></pre>
+      </div>
+    </div>
+
+    <ul class="next" data-reveal="3">
+      <li><a href="flash/index.html"><b>Have an ESP32?</b><span>Flash it from this browser. No toolchain.</span></a></li>
+      <li><a href="docs/add-the-key.html"><b>Board on the bench?</b><span>Add the key to an iPhone and open the door.</span></a></li>
+      <li><a href="docs/index.html"><b>Want the details?</b><span>Bring-up, porting and bench notes, all in the guides.</span></a></li>
+    </ul>
   </div>
-  <p data-reveal="4">The <a href="flash/index.html">web flasher</a> installs a
-  prebuilt ESP32 image over WebSerial, with no toolchain.</p>
 </section>
 
-<!-- ============================================================ how it opens -->
-<section class="page railed defer-paint" style="padding-top:var(--sp-12)">
-  <div class="section-h"><span class="n">02</span><h2>How a door opens</h2><span class="rule"></span></div>
-  <p class="lede" style="margin-bottom:var(--sp-6)" data-reveal="0">Five steps, in the
-  order they happen.</p>
-  <ol class="ladder" data-reveal="1">
-    <li><span class="n">1</span><span class="what">BLE</span>
-      <span class="how">the phone finds the credential service <code>0xFFF2</code></span></li>
-    <li><span class="n">2</span><span class="what">auth</span>
-      <span class="how">AUTH0, AUTH1, EXCHANGE, and both ends hold the URSK</span></li>
-    <li><span class="n">3</span><span class="what">UWB</span>
-      <span class="how">key ladder to STS, then the DS-TWR round above</span></li>
-    <li><span class="n">4</span><span class="what">gate</span>
-      <span class="how">a trusted range moves the bolt</span></li>
-    <li><span class="n">5</span><span class="what">Matter</span>
-      <span class="how">lock state over Thread, into Apple Home</span></li>
-  </ol>
-  <div class="callout callout-note" data-reveal="2"><span class="ico">note</span><div>
-    <p>The credential is verified on the lock itself, so there is no remote verifier
-    to compromise.</p>
-  </div></div>
+<!-- ===================================================================== why
+     Three reasons, each one a fact about the design rather than a promise. -->
+<section class="sec defer-paint" id="why">
+  <div class="sec-in">
+    <div class="sec-h" data-reveal="0">
+      <span class="eyebrow">Why it is different</span>
+      <h2>Distance is measured, not trusted.</h2>
+      <p class="lede">Signal strength can be faked from across the street. Time of
+      flight cannot: light takes 3.34&nbsp;ns per metre, and nothing makes it
+      arrive early.</p>
+    </div>
+    <ul class="pillars">
+      <li class="glass-panel" data-reveal="1">
+        <span class="p-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="6" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M10.5 7.5a6.4 6.4 0 0 1 0 9"/><path d="M14 4.5a10.6 10.6 0 0 1 0 15"/><path d="M20 8v8"/></svg></span>
+        <b>Time of flight, not signal strength</b>
+        <p>A DS-TWR round under a scrambled timestamp sequence puts the phone on a
+        ruler with 4.7&nbsp;mm ticks. A relay can only add delay, which moves the
+        phone <em>further</em> from the door.</p>
+      </li>
+      <li class="glass-panel" data-reveal="2">
+        <span class="p-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7"/><circle cx="12" cy="15.5" r="1.3" fill="currentColor" stroke="none"/></svg></span>
+        <b>Verified on the lock</b>
+        <p>The credential is checked on the device itself. No app in the loop, no
+        account, no cloud round trip, and therefore no remote verifier to
+        compromise.</p>
+      </li>
+      <li class="glass-panel" data-reveal="3">
+        <span class="p-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2.4"/><path d="M10.5 6h3"/><path d="M12 17.6v.01"/></svg></span>
+        <b>The phone already in your pocket</b>
+        <p>An iPhone or Apple&nbsp;Watch opens it on approach over UWB or on tap
+        over NFC, and the lock reports its state to Apple&nbsp;Home over Matter.</p>
+      </li>
+    </ul>
+  </div>
 </section>
 
-<!-- ================================================================== budget -->
-<section class="page railed defer-paint" style="padding-top:var(--sp-16)">
-  <div class="section-h"><span class="n">03</span><h2>All of it on one nRF52833</h2><span class="rule"></span></div>
-  <div class="split">
-    <div data-reveal="0">
-      <p>512&nbsp;KB of flash and 128&nbsp;KB of RAM carry the reader, the DW3110 radio,
-      an OpenThread MTD and a Matter node at the same time. A hand-written Matter node,
-      rather than CHIP, is what makes it fit.</p>
-      <ul class="rows mono">
-        <li><span class="rowline"><span class="row-name">reader</span><span class="row-desc">AUTH0 / AUTH1 / EXCHANGE, key ladder, STS, DS-TWR</span></span></li>
-        <li><span class="rowline"><span class="row-name">matter</span><span class="row-desc">hand-written node, Door Lock cluster, five fabrics</span></span></li>
-        <li><span class="rowline"><span class="row-name">thread</span><span class="row-desc">OpenThread MTD, joins a real network</span></span></li>
-        <li><span class="rowline"><span class="row-name">classifier</span><span class="row-desc">line-of-sight vs obstructed, 776 B of flash</span></span></li>
+<!-- ===================================================================== how
+     The sequence is the content, so it is drawn as one. -->
+<section class="sec defer-paint" id="how">
+  <div class="sec-in">
+    <div class="sec-h" data-reveal="0">
+      <span class="eyebrow">How a door opens</span>
+      <h2>Learned from the air.<br>Written by hand.</h2>
+      <p class="lede">Five steps in the order they happen, each one studied as it
+      crossed the air and reimplemented in portable C: the credential exchange,
+      the key ladder, STS, DS-TWR, and a Matter node without CHIP. The notes
+      are public.</p>
+    </div>
+    <ol class="flow">
+      <li data-reveal="1"><span class="n">01</span><b>BLE</b>
+        <span>The phone finds the lock&rsquo;s credential service.</span></li>
+      <li data-reveal="2"><span class="n">02</span><b>Authenticate</b>
+        <span>AUTH0, AUTH1 and EXCHANGE, and both ends hold the ranging key.</span></li>
+      <li data-reveal="3"><span class="n">03</span><b>Range</b>
+        <span>The key ladder seeds an STS session, then one DS-TWR round.</span></li>
+      <li data-reveal="4"><span class="n">04</span><b>Gate</b>
+        <span>A trusted range inside 1.00&nbsp;m moves the bolt.</span></li>
+      <li data-reveal="5"><span class="n">05</span><b>Home</b>
+        <span>Lock state into Apple&nbsp;Home over Thread or Wi-Fi.</span></li>
+    </ol>
+    <div class="cta" data-reveal="6">
+      <a class="btn" href="docs/protocol-notes.html">Protocol notes</a>
+      <a class="btn btn-ghost" href="docs/protocol-research.html">The on-air study</a>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================= browser
+     The two pages that are the product for a visitor without a board. -->
+<section class="sec defer-paint" id="browser">
+  <div class="sec-in">
+    <div class="sec-h" data-reveal="0">
+      <span class="eyebrow">No hardware needed</span>
+      <h2>The firmware, running in your browser.</h2>
+    </div>
+    <div class="cardgrid duo">
+      <a class="card" href="twin/index.html" data-reveal="1">
+        <div class="card-h"><span class="status status-live">runs the firmware</span></div>
+        <b class="card-t">Digital twin</b>
+        <p>The real ranging engine compiled to WebAssembly, not a re-implementation.
+        Walk a phantom phone at the lock, add noise, fire a spoof, and single-step
+        a ranging round.</p>
+        <div class="range-viz" aria-hidden="true">
+          <span class="rv-ring"></span><span class="rv-ring"></span><span class="rv-ring"></span>
+          <span class="rv-line"></span>
+          <span class="rv-shot"></span><span class="rv-echo"></span>
+          <span class="rv-anchor"></span><span class="rv-tag"></span>
+        </div>
+      </a>
+      <a class="card" href="flash/index.html" data-reveal="2">
+        <div class="card-h"><span class="status">WebSerial</span></div>
+        <b class="card-t">Web flasher</b>
+        <p>Plug in an ESP32-S3, C5 or C6 and install a signed image from this page.
+        Once a board is running, the same page updates either chip over the air.</p>
+        <div class="flash-demo" aria-hidden="true">
+          <div class="progress progress-lg"><span style="width:62%"></span></div>
+          <div class="progress-row"><span>writing app partition</span><span class="pct">62%</span></div>
+        </div>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================ hardware
+     The boards it runs on, beside what it looks like on the phone. Both are
+     real: the captures were recorded against the lock on the bench. -->
+<section class="sec defer-paint" id="hardware">
+  <div class="sec-in">
+    <div class="sec-h" data-reveal="0">
+      <span class="eyebrow">On real hardware</span>
+      <h2>Three chip families. One portable core.</h2>
+    </div>
+    <div class="proof">
+      <figure class="proof-fig" data-reveal="1">
+        <img class="only-dark" src="assets/grid-demo-dark.webp" width="1600" height="1510"
+             loading="lazy" decoding="async"
+             alt="Eight iPhone screens recorded against the lock: Home Key setup, Approach Direction, provisioning, an NFC tap, and lock-state notifications">
+        <img class="only-light" src="assets/grid-demo-light.webp" width="1600" height="1510"
+             loading="lazy" decoding="async"
+             alt="Eight iPhone screens recorded against the lock: Home Key setup, Approach Direction, provisioning, an NFC tap, and lock-state notifications">
+        <figcaption class="figcap">Home Key setup, Approach Direction, provisioning, an
+        NFC tap and live lock state. Recorded on the bench, not mocked up.</figcaption>
+      </figure>
+      <ul class="boards">
+        <li class="glass-panel" data-reveal="2">
+          <b>DWM3001CDK</b>
+          <span class="chip">nRF52833 + DW3110</span>
+          <p>The reference board. Radio, MCU and a J-Link on one part, nothing to
+          wire. Matter over Thread. Also builds without Zephyr.</p>
+        </li>
+        <li class="glass-panel" data-reveal="3">
+          <b>nRF5340 DK</b>
+          <span class="chip">DWM3000EVB + NFC12A1</span>
+          <p>UWB and NFC on the same lock, so a tap works when a walk-up does not.
+          Matter over Thread.</p>
+        </li>
+        <li class="glass-panel" data-reveal="4">
+          <b>ESP32-S3 / C5 / C6</b>
+          <span class="chip">DWM3000EVB</span>
+          <p>Matter over Wi-Fi, and the tier the web flasher installs with no
+          toolchain at all.</p>
+        </li>
+        <li class="boards-more" data-reveal="5">
+          <a href="docs/specification.html"><span>Every target, every number, and the
+          memory budget on the smallest part.</span><b>Read the specification</b></a>
+        </li>
       </ul>
     </div>
-    <div data-reveal="1">
-      <div class="meter">
-        <div class="meter-h"><span class="meter-k">Flash</span>
-          <span class="meter-pct">96.31%</span>
-          <span class="meter-v">417,684 / 433,664 B</span></div>
-        <div class="meter-track"><span class="meter-fill tight" style="width:96.31%"></span></div>
-      </div>
-      <div class="meter">
-        <div class="meter-h"><span class="meter-k">RAM</span>
-          <span class="meter-pct">90.26%</span>
-          <span class="meter-v">118,312 / 131,072 B</span></div>
-        <div class="meter-track"><span class="meter-fill tight" style="width:90.26%"></span></div>
-      </div>
-      <p class="meter-note">Both bars are amber because both are tight; flash is the
-      tighter. <code>make cdk-size</code> reports them.</p>
-      <div class="tablewrap" style="margin-top:var(--sp-6)">
-        <table class="data">
-          <tbody>
-            <tr><th>Toolchain</th><td>NCS v3.3.0, Zephyr 4.3.99</td></tr>
-            <tr><th>Signing</th><td>ECDSA-P256, verified by MCUboot</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="callout callout-warn"><span class="ico">warn</span><div>
-        <p>Repository defaults are bench defaults. Keys and identities in the tree are
-        for development. Do not secure valuables with it.</p>
-      </div></div>
+  </div>
+</section>
+
+<!-- ================================================================== closer -->
+<section class="sec closer defer-paint">
+  <div class="sec-in">
+    <div class="sec-h" data-reveal="0">
+      <span class="eyebrow">Open source</span>
+      <h2>ISC licensed,<br>all the way down.</h2>
+      <p class="lede">No CLA. Every number on this page is checked against the code
+      that produces it, and the build fails when they drift.</p>
     </div>
-  </div>
-</section>
-
-<!-- ============================================================== classifier -->
-<section class="page railed defer-paint" style="padding-top:var(--sp-16)">
-  <div class="section-h"><span class="n">04</span><h2>Obstruction detection</h2><span class="rule"></span></div>
-  <div class="split">
-    <div data-reveal="0">
-      <p>A phone in a hand and a phone through a wall both measure one metre. The
-      <em>shape</em> of the arrival separates them: a direct path lands as one sharp
-      edge, a path through a door arrives late, spread and weaker.</p>
-      <p>A decision tree reads the DW3000's own receive diagnostics in 776 bytes of
-      flash, with no interpreter and no allocation.</p>
-      <div class="tablewrap">
-        <table class="data">
-          <tbody>
-            <tr><th>Model</th><td>depth-2 decision tree, generated by emlearn</td></tr>
-            <tr><th>Cost</th><td>776 B flash, 0 B RAM, 28 B stack</td></tr>
-            <tr><th>Input</th><td>five CIA registers plus the measured range</td></tr>
-            <tr><th>Gate</th><td>the host suite certifies the C matches the trained model</td></tr>
-          </tbody>
-        </table>
-      </div>
+    <div class="cta" data-reveal="1">
+      <a class="btn btn-primary" href="https://github.com/ultrawidelock/ultrawidelock" data-ext>Read the source</a>
+      <a class="btn" href="docs/index.html">Read the guides</a>
+      <a class="btn btn-ghost" href="https://github.com/ultrawidelock/ultrawidelock/blob/main/PORTING.md" data-ext>Port it to a board</a>
     </div>
-    <figure class="figure" data-reveal="1">
-      <svg viewBox="0 0 420 210" role="img" aria-labelledby="cir-t cir-d">
-        <title id="cir-t">Two channel impulse responses compared</title>
-        <desc id="cir-d">A direct path arrives as a single narrow peak at the leading
-        edge. An obstructed path arrives later, lower and spread across several
-        samples, which is what the classifier reads.</desc>
-        <line x1="30" y1="170" x2="404" y2="170" stroke="var(--scope-axis)" stroke-width="1"/>
-        <line x1="30" y1="20" x2="30" y2="170" stroke="var(--scope-axis)" stroke-width="1"/>
-        <text x="30" y="192" fill="var(--faint)" font-family="var(--font-mono)"
-              font-size="10" letter-spacing=".07em">TIME &#8594;</text>
-        <text x="8" y="26" fill="var(--faint)" font-family="var(--font-mono)"
-              font-size="10" transform="rotate(-90 8 26)">AMPLITUDE</text>
-        <!-- direct: one sharp leading edge -->
-        <path d="M30 170 L96 170 L104 40 L112 150 L124 166 L150 170 L404 170"
-              fill="none" stroke="var(--path-first)" stroke-width="2"
-              stroke-linejoin="round"/>
-        <!-- obstructed: late, lower, spread -->
-        <path d="M30 170 L150 170 L164 118 L178 96 L196 108 L212 92 L232 124
-                 L252 150 L282 164 L320 170 L404 170"
-              fill="none" stroke="var(--path-late)" stroke-width="2"
-              stroke-linejoin="round"/>
-        <g font-family="var(--font-mono)" font-size="10" letter-spacing=".06em">
-          <text x="118" y="44" fill="var(--path-first-ink)">first path</text>
-          <text x="214" y="80" fill="var(--path-late)">late, spread</text>
-        </g>
-      </svg>
-      <figcaption class="figcap"><b>What the CIA registers see.</b> Mint is a hand
-      holding a phone. Amber is the same one-metre reading through a door. The range
-      agrees; the arrival does not.</figcaption>
-    </figure>
-  </div>
-</section>
-
-<!-- ============================================================ side of door
-     One distance is a radius. The side question is answered twice, by two
-     different routes, and both of them fail closed -- which is the only
-     property worth putting on a landing page. -->
-<section class="page railed defer-paint" style="padding-top:var(--sp-16)">
-  <div class="section-h"><span class="n">05</span><h2>Side of the door</h2><span class="rule"></span></div>
-  <p class="lede" style="margin-bottom:var(--sp-6)" data-reveal="0">A phone on the couch
-  and a phone on the porch can be the same distance from the door. Only one of them
-  should open it.</p>
-  <div class="split">
-    <div data-reveal="1">
-      <span class="eyebrow">A second UWB anchor</span>
-      <p>The satellite joins the phone&rsquo;s own ranging round as responder&nbsp;1, so both
-      distances come from one round rather than two guesses stitched together. It reports
-      its distance sealed and bound to the block it was measured in, and the lock fuses the
-      pair only when both halves carry the same block. It builds for the DWM3001CDK, the
-      nRF5340&nbsp;DK, and the ESP32 tier over an ESP-NOW carrier.</p>
-      <div class="prewrap">
-        <div class="cap"><span>shell</span><span style="margin-left:auto">two boards</span></div>
-<pre><code>make anchorlink             <span class="tok-comment"># the lock half</span>
-make sat-build SAT_THREAD=1 <span class="tok-comment"># the satellite half</span></code></pre>
-      </div>
-    </div>
-    <div data-reveal="2">
-      <span class="eyebrow">Two BLE witnesses</span>
-      <p>One nRF52840 dongle inside, one outside, a differential read consulted at the
-      one moment it is reliable, and a door-transition latch that holds the answer between
-      crossings. One image, role set at install.</p>
-      <div class="prewrap">
-        <div class="cap"><span>shell</span><span style="margin-left:auto">two dongles</span></div>
-<pre><code>make witness-build
-make witness-flash          <span class="tok-comment"># over USB DFU, no probe</span></code></pre>
-      </div>
-    </div>
-  </div>
-  <div class="callout callout-note" data-reveal="3"><span class="ico">note</span><div>
-    <p>The side gate fails closed for passive unlock: no agreeing second opinion, no
-    walk-up open. A dead dongle, a dropped mesh, a reboot or corrupt storage each leave
-    the lock refusing to open from inside. Outside, the recovery is a retry, an NFC tap,
-    or the app.</p>
-  </div></div>
-  <div class="cta" style="margin-top:var(--sp-6)" data-reveal="4">
-    <a class="btn" href="docs/inside-latch.html">The design</a>
-    <a class="btn" href="docs/second-anchor.html">The second anchor</a>
-    <a class="btn btn-ghost" href="docs/bench-inside-outside.html">The bench runbook</a>
-  </div>
-</section>
-
-<!-- ================================================================= targets -->
-<section class="page railed defer-paint" style="padding-top:var(--sp-16)">
-  <div class="section-h"><span class="n">06</span><h2>Hardware targets</h2><span class="rule"></span></div>
-  <!-- The frame is already there and the readings arrive into it, one row at a
-       time on --reveal-step. A table of hardware that flashes on as a finished
-       grid says the answer was always there; this says it was measured. -->
-  <div class="tablewrap">
-    <table class="data">
-      <thead><tr><th>Application</th><th>Hardware</th><th>Connectivity</th></tr></thead>
-      <tbody>
-        <tr data-reveal="0"><td><code>dwm3001cdk-lock</code></td><td>DWM3001CDK, nRF52833 + DW3110</td><td>UWB, Matter over Thread</td></tr>
-        <tr data-reveal="1"><td><code>dwm3001cdk-lock-freertos</code></td><td>the same board, no Zephyr</td><td>UWB, Matter over Thread</td></tr>
-        <tr data-reveal="2"><td><code>nrf5340dk-lock</code></td><td>nRF5340 DK, DWM3000EVB, NFC12A1</td><td>UWB and NFC, Matter over Thread</td></tr>
-        <tr data-reveal="3"><td><code>esp32-matter-lock</code></td><td>ESP32-S3 / C5 / C6 with DWM3000EVB</td><td>UWB, Matter over Wi-Fi</td></tr>
-        <tr data-reveal="4"><td><code>satellite</code></td><td>CDK, nRF5340 DK, or the ESP32 tier</td><td>UWB responder, sealed link to the lock</td></tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<!-- ============================================================ over the air
-     The flasher is already a nav item, but nothing on this page said the
-     firmware can be replaced without a probe, which is the part that decides
-     whether a reader will ever put one of these on a door. -->
-<section class="page railed defer-paint" style="padding-top:var(--sp-16)">
-  <div class="section-h"><span class="n">07</span><h2>Update over the air</h2><span class="rule"></span></div>
-  <p class="lede" style="margin-bottom:var(--sp-6)" data-reveal="0">Either chip, from a
-  browser. <a href="flash/index.html">The flash page</a> finds the board, reads what it is
-  running, and sends the one update that applies.</p>
-  <div class="tablewrap" data-reveal="1">
-    <table class="data">
-      <thead><tr><th></th><th>DWM3001CDK</th><th>ESP32-S3 / C5 / C6</th></tr></thead>
-      <tbody>
-        <tr><th>Transport</th><td>mcumgr, over BLE <b>or</b> USB</td><td>native GATT frames</td></tr>
-        <tr><th>Payload</th><td>signed delta, about 11&nbsp;KB</td><td>signed whole image, about 2&nbsp;MB</td></tr>
-        <tr><th>Why</th><td>one MCUboot slot in 512&nbsp;KB</td><td>two full OTA slots</td></tr>
-        <tr><th>Time</th><td>seconds</td><td>several minutes over BLE</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p data-reveal="2">Writing starts once the update window is open on the board:
-  <b>SW2</b> on the CDK, a <b>double-click</b> on the ESP32&rsquo;s button. That press is the
-  whole availability gate; authenticity is a P-256 signature, checked before the first byte
-  is written and again by the bootloader. The CDK can also be <b>reinstalled whole</b> over
-  the cable through MCUboot serial recovery, which runs from the bootloader alone.</p>
-  <div class="callout callout-note" data-reveal="3"><span class="ico">note</span><div>
-    <p>Chrome or Edge on a computer, or Chrome on Android. Neither Web&nbsp;Bluetooth nor
-    WebSerial exists in Safari, so not from an iPhone.</p>
-  </div></div>
-</section>
-
-<!-- =================================================================== tools -->
-<section class="page railed defer-paint" style="padding-top:var(--sp-16)">
-  <div class="section-h"><span class="n">08</span><h2>Try it without hardware</h2><span class="rule"></span></div>
-  <div class="cardgrid">
-    <a class="card" href="twin/index.html" data-reveal="0">
-      <div class="card-h"><span class="status status-live">runs the firmware</span></div>
-      <b class="card-t">Digital twin</b>
-      <p>The untouched <code>ultrawidelock_uwb</code> sources, compiled to WASM against the
-      same shim the host suite links. Every block is a real CCM*-encrypted exchange decoded
-      by the firmware&rsquo;s own RX state machine. Walk a phantom phone, add noise, fire a
-      Ghost-Peak spoof, single-step a DS-TWR round.</p>
-      <div class="range-viz" style="margin-top:var(--sp-4);min-height:8rem" aria-hidden="true">
-        <span class="rv-ring"></span><span class="rv-ring"></span><span class="rv-ring"></span>
-        <span class="rv-line"></span>
-        <span class="rv-shot"></span><span class="rv-echo"></span>
-        <span class="rv-anchor"></span><span class="rv-tag"></span>
-      </div>
-    </a>
-    <a class="card" href="flash/index.html" data-reveal="1">
-      <div class="card-h"><span class="status">WebSerial</span></div>
-      <b class="card-t">Web flasher</b>
-      <p>Plug an ESP32-S3, C5 or C6 into USB and install a merged image from this page,
-      with no toolchain and no command line. The page detects the chip, and updates either
-      board over the air once one is running.</p>
-      <div class="progress progress-lg" style="margin-top:var(--sp-4)"><span style="width:62%"></span></div>
-      <div class="progress-row" style="margin-top:var(--sp-2)"><span>writing app partition</span><span class="pct">62%</span></div>
-    </a>
-    <a class="card" href="graph/index.html" data-reveal="2">
-      <div class="card-h"><span class="status">generated</span></div>
-      <b class="card-t">Subsystem graph</b>
-      <p>What depends on what, extracted from the source tree: 17 subsystems and 49
-      edges, or 393 files with their symbols and 703 links.</p>
-    </a>
-  </div>
-</section>
-
-<!-- =========================================================== specification -->
-<section class="page railed defer-paint" style="padding:var(--sp-16) var(--sp-8) var(--sp-20)">
-  <div class="section-h"><span class="n">09</span><h2>Specification</h2><span class="rule"></span></div>
-  <div class="tablewrap">
-    <table class="data">
-      <tbody>
-        <tr data-reveal="0"><th>UWB</th><td>DS-TWR under an STS session, channels 5 and 9</td></tr>
-        <tr data-reveal="1"><th>Resolution</th><td>one tick is about 15.65 ps, roughly 4.692 mm</td></tr>
-        <tr data-reveal="2"><th>BLE</th><td>credential service 0xFFF2, AUTH0 / AUTH1 / EXCHANGE</td></tr>
-        <tr data-reveal="3"><th>NFC</th><td>ECP, on the nRF5340 DK target</td></tr>
-        <tr data-reveal="4"><th>Side of door</th><td>a second UWB anchor in the same round, or two BLE witnesses</td></tr>
-        <tr data-reveal="5"><th>Matter</th><td>hand-written node over Thread, or over Wi-Fi on ESP32</td></tr>
-        <tr data-reveal="6"><th>Door Lock</th><td><code>LockOperation</code> events, <code>AutoRelockTime</code>, <code>DoorLockAlarm</code>, Approach Direction</td></tr>
-        <tr data-reveal="7"><th>Matter client</th><td>CASE as initiator and the Binding cluster, to open a second lock. Off by default</td></tr>
-        <tr data-reveal="8"><th>Updates</th><td>signed delta over BLE or USB, applied from inside MCUboot; whole signed image on ESP32</td></tr>
-        <tr data-reveal="9"><th>Ports</th><td>Zephyr, ESP-IDF, and a Zephyr-free FreeRTOS port</td></tr>
-        <tr data-reveal="10"><th>Tests</th><td>9,608 host checks across 18 suites, no hardware needed</td></tr>
-        <tr data-reveal="11"><th>License</th><td>ISC. The vendored Qorvo UWB driver is LicenseRef-QORVO-2</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <!-- After the last row, not alongside the first. -->
-  <div class="cta" style="margin-top:var(--sp-8)" data-reveal="12">
-    <a class="btn btn-primary" href="https://github.com/ultrawidelock/ultrawidelock" data-ext>Read the source</a>
-    <a class="btn" href="https://github.com/ultrawidelock/ultrawidelock/blob/main/LICENSE" data-ext>ISC license</a>
-    <a class="btn btn-ghost" href="https://github.com/ultrawidelock/ultrawidelock/blob/main/PORTING.md" data-ext>Port it to a board</a>
+    <p class="fine" data-reveal="2">Repository defaults are bench defaults. Keys and
+    identities in the tree are for development. Do not secure valuables with it.</p>
   </div>
 </section>
 </main>

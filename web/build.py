@@ -500,7 +500,8 @@ DOCS = ROOT / "docs"
 # bring-ups, which is not how anyone reads them. Anything not named here still
 # appears, under "More" -- a curated list must not be able to hide a new file.
 DOC_GROUPS = (
-    ("Start", ("configuring", "add-the-key", "troubleshooting")),
+    ("Start", ("specification", "configuring", "add-the-key",
+              "troubleshooting")),
     ("Boards", ("esp32-bringup", "esp32-gotchas", "nrf5340-bringup",
                 "nrf5340-wiring", "dwm3001cdk-surgery", "hardware-validation")),
     ("Porting", ("porting", "porting-esp32", "chipset-memory")),
@@ -847,20 +848,27 @@ def copy_trees() -> list[Path]:
     return written
 
 
-def stage_social() -> list[Path]:
-    """The og:image, from the repository's own social preview.
+# Repository assets the site shows. The social preview is the og:image: link
+# previews are the one place the site is seen before it is visited, and a
+# missing one renders as a bare grey card in every chat app. The two captures
+# are the landing page's proof section, real phone screens recorded against
+# the lock on the bench, one per theme.
+SITE_ASSETS = ("social-preview.png", "grid-demo-dark.webp", "grid-demo-light.webp")
 
-    Link previews are the one place the site is seen before it is visited, and
-    a missing og:image renders as a bare grey card in every chat app.
-    """
-    src = ROOT / "assets" / "social-preview.png"
-    if not src.is_file():
-        print("build: assets/social-preview.png absent, og:image will 404")
-        return []
-    dest = DIST / "assets" / "social-preview.png"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
-    return [dest]
+
+def stage_assets() -> list[Path]:
+    """Copy the repository assets the pages reference into dist/assets/."""
+    written = []
+    for name in SITE_ASSETS:
+        src = ROOT / "assets" / name
+        if not src.is_file():
+            print(f"build: assets/{name} absent, the page that shows it will 404")
+            continue
+        dest = DIST / "assets" / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        written.append(dest)
+    return written
 
 
 LINK_RE = re.compile(r'(?:href|src)="([^"#][^"]*)"')
@@ -1017,7 +1025,7 @@ def main() -> int:
     written = copy_trees()
     written.append(bundle_css())
     written += bundle_js()
-    written += stage_social()
+    written += stage_assets()
     written.append(build_landing())
     written += build_docs()
     written += stage_firmware()
