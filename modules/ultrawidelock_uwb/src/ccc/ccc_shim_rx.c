@@ -2198,6 +2198,19 @@ void ccc_prepoll_stop(void)
 				     (unsigned)g_stats.poll_ok, (unsigned)g_stats.poll_fail,
 				     (unsigned)g_stats.resp_tx, (unsigned)g_stats.final_data,
 				     (unsigned)g_stats.range, (unsigned)g_stats.last_poll_st);
+#if defined(ESP_PLATFORM) && defined(CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT)
+		/* No J-Link on this port, so the Final_Data fate rides the field log too
+		 * (cumulative since boot, never zeroed: the CDK bench reads the same
+		 * counters live). fdarm = delayed SP0 window armed/refused; pf = the first
+		 * frame after a FINAL: errored, errored but reading Final_Data, a clean
+		 * Final_Data, or the next Pre-POLL (Final_Data never detected). */
+		ultrawidelock_printf("I: final-data fate: fdarm=%u/%u pf=%u err=%u errfd=%u fd=%u "
+				     "pp=%u margin=%dus\n",
+				     (unsigned)g_dbg_fdrx_arm_ok, (unsigned)g_dbg_fdrx_arm_fail,
+				     (unsigned)g_dbg_pf_n, (unsigned)g_dbg_pf_err,
+				     (unsigned)g_dbg_pf_err_final, (unsigned)g_dbg_pf_final,
+				     (unsigned)g_dbg_pf_prepoll, (int)(g_dbg_fdrx_margin / 250));
+#endif
 		memset(&g_stats, 0, sizeof(g_stats));
 	}
 	/* Per-session PHY freshness: drop the cache on every stop so the next
