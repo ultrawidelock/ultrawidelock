@@ -119,7 +119,8 @@ static void dw3000_isr_task(void *arg)
 // The worker task runs at priority 23 (above esp_timer and Thread) so DS-TWR slot callbacks
 // (RX/TX-done) are not delayed by preemption; it is bursty and mostly blocked on the IRQ semaphore.
 // It uses core 1 when available and core 0 on single-core targets such as ESP32-C6.
-// Leaves the interrupt enabled. Returns 0 on success, -1 if the ISR service failed to install.
+// Leaves the interrupt enabled and SPI on the fast clock. Returns 0 on success, -1 if the ISR
+// service failed to install.
 int dw3000_hw_init_interrupt(void)
 {
 	static bool isr_service_installed;
@@ -161,6 +162,13 @@ int dw3000_hw_init_interrupt(void)
 			return -1;
 		}
 	}
+	/* The shared bring-up calls this last, with the part initialised and its PLL
+	 * locked, and it is the only call this port gets at that point. Nothing else
+	 * leaves the slow clock: the decadriver's setfastrate sits in an init() the
+	 * bring-up does not use, so every transfer of the Pre-POLL -> POLL arm ran
+	 * at 2 MHz and the arm missed its deadline (field log: dsys 1608-1697 us of
+	 * 1836, ARM FAIL not-late on every block). */
+	dw3000_spi_speed_fast();
 	s_irq_enabled = true;
 	ESP_LOGI(TAG, "IRQ on GPIO%d, worker core %d", ULTRAWIDELOCK_DW3000_PIN_IRQ,
 		 ULTRAWIDELOCK_DW3000_TASK_CORE);
@@ -192,6 +200,8 @@ bool dw3000_hw_interrupt_is_enabled(void) { return s_irq_enabled; }
 // Blocks for about 3 ms total to let the chip climb to IDLE_RC. Clears the asleep flag.
 void dw3000_hw_reset(void)
 {
+	/* The part restarts in INIT_RC, which only takes the slow SPI clock. */
+	dw3000_spi_speed_slow();
 	/* Drive reset low (assert), release to hi-Z, let the chip climb to IDLE_RC. */
 	gpio_set_direction(ULTRAWIDELOCK_DW3000_PIN_RST, GPIO_MODE_OUTPUT);
 	gpio_set_level(ULTRAWIDELOCK_DW3000_PIN_RST, 0);
@@ -211,6 +221,7 @@ void dw3000_hw_wakeup(void)
 		return;
 	}
 	ESP_LOGI(TAG, "WAKEUP CS");
+	dw3000_spi_speed_slow(); /* wakes into INIT_RC: slow clock until IDLE_RC */
 	dw3000_spi_wakeup();
 	esp_rom_delay_us(2000); /* INIT_RC -> IDLE_RC startup */
 	s_asleep = false;
@@ -222,6 +233,8 @@ void dw3000_hw_wakeup(void)
 	}
 	if (spins >= 500) {
 		ESP_LOGE(TAG, "WAKEUP: chip never reached IDLE_RC");
+	} else {
+		dw3000_spi_speed_fast();
 	}
 }
 

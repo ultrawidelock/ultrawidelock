@@ -240,11 +240,18 @@ trap 'cleanup; trap - INT; kill -INT $$' INT
 trap 'cleanup; trap - TERM; kill -TERM $$' TERM
 
 for b in "${BLOCKS[@]}"; do
-	# `|| echo $? >rc` rather than `set -e`: the block runs in a subshell, and
-	# its status has to survive as data for the loop below.
+	# The block runs in its OWN subshell, started with &, never as the left
+	# side of || -- bash suppresses errexit through a condition context, even
+	# an explicit `set -e` inside it, so a block invoked as `"$b" || rc=$?`
+	# ran past a failing test binary or a failed link and returned the status
+	# of its last line (`rm -f`). That hid 24 reader failures and a ranging
+	# block that did not link. tests/host/run.sh pl_start is the same shape.
+	# Its status still has to survive as data for the loop below.
 	{
+		(set -e; "$b") >"$work/$b.out" 2>&1 &
+		inner=$!
 		rc=0
-		"$b" >"$work/$b.out" 2>&1 || rc=$?
+		wait "$inner" || rc=$?
 		printf '%s' "$rc" >"$work/$b.rc"
 	} &
 	pids="$pids $!"

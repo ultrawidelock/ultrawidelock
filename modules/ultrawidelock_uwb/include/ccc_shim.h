@@ -77,7 +77,9 @@ bool ccc_shim_rx_awaiting_poll(void);
  */
 struct ccc_shim_rx_stats {
 	uint32_t prepoll_ok;  /* Pre-POLLs accepted (MIC + context + replay checks) */
+	uint32_t warm_fail;   /* next-block STS derivations that failed: no arm can follow */
 	uint32_t poll_arm;    /* SP3 POLL windows armed off a warm STS */
+	uint32_t arm_fail;    /* POLL windows the DW3000 refused to arm (late, or busy) */
 	uint32_t poll_ok;     /* POLLs received with a good STS in our block */
 	uint32_t poll_fail;   /* POLL windows that closed without one (CPER / timeout) */
 	uint32_t resp_tx;     /* Response_0 delayed TXs armed */

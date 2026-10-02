@@ -229,10 +229,16 @@ config ULTRAWIDELOCK_CRED_STEPUP
 config ULTRAWIDELOCK_CRED_STEPUP_BENCH
 	bool "Bench one-shot step-up (ultrawidelock-stepup arm) + its worker task"
 	depends on ULTRAWIDELOCK_CRED_STEPUP
-	default y
+	default n
 	help
 	  The console-armed one-shot and the FreeRTOS worker that verifies its
 	  document off the BLE-host task. The learn path does not need either.
+
+	  Off by default: the worker's job copy and scratch are 4,324 B of
+	  static internal DRAM (measured, S3 matter-lock), and on the S3 that
+	  is heap the runtime no longer has. #46 turned this on with the learn
+	  path and the image ran out of internal heap in the field (69042d86,
+	  84fef061). A bench image turns it on in its own sdkconfig.
 
 config ULTRAWIDELOCK_CRED_STEPUP_SD_MAX
 	int "Step-up DeviceResponse collection buffer (bytes)"

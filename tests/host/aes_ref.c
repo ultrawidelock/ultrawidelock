@@ -112,6 +112,12 @@ static void sub_shift_mix_add(uint8_t s[16], const uint8_t *rk, int mix)
 	}
 }
 
+/* Nonzero fails every call with a key of this many bits, as the ESP32's
+ * mbedTLS-PSA provider does when its per-block key import or DMA descriptor
+ * allocation finds no heap. Keyed by size so a test can fail the 256-bit
+ * STS key schedule (dURSK off mURSK) while the 128-bit Pre-POLL CCM works. */
+int aes_ref_fail_bits;
+
 int ultrawidelock_aes_ecb_encrypt(const uint8_t *key, size_t key_bits,
 				  const uint8_t in[16], uint8_t out[16])
 {
@@ -119,6 +125,9 @@ int ultrawidelock_aes_ecb_encrypt(const uint8_t *key, size_t key_bits,
 	uint8_t s[16];
 	int nk, nr;
 
+	if (aes_ref_fail_bits != 0 && key_bits == (size_t)aes_ref_fail_bits) {
+		return -EIO;
+	}
 	if (key == NULL || in == NULL || out == NULL) {
 		return -EINVAL;
 	}
