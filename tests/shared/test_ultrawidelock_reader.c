@@ -455,6 +455,10 @@ struct ph {
 	/* BleSK ranging channel, phone's view. */
 	uint8_t ble_r2p[32], ble_p2r[32];
 	uint32_t ble_r2p_ctr, ble_p2r_ctr;
+
+	/* AUTH1Response signaling bitmap (tag 0x5E), sent when non-zero; bit 0
+	 * says the device holds an Access Document the reader may ask for. */
+	uint16_t signaling;
 };
 
 /* Deliver one enveloped SDU to the reader as the transport would. */
@@ -738,6 +742,11 @@ static int ph_auth1_resp(struct ph *p, uint16_t conn, const uint8_t *signer, int
 	}
 	ptn += tlv1(pt + ptn, ULTRAWIDELOCK_TAG_DEVICE_PUB, p->cred_pub, 65);
 	ptn += tlv1(pt + ptn, ULTRAWIDELOCK_TAG_SIG, sig, 64);
+	if (p->signaling != 0u) {
+		const uint8_t bm[2] = {(uint8_t)(p->signaling >> 8), (uint8_t)p->signaling};
+
+		ptn += tlv1(pt + ptn, 0x5E, bm, sizeof(bm));
+	}
 
 	uint8_t tag[16];
 
@@ -844,21 +853,25 @@ static void kid_of(const uint8_t pub[65], uint8_t kid[8])
 }
 
 /* Consume the reader's ENVELOPE(DeviceRequest), open it off the StepUpSK reader
- * channel and hand back the DeviceRequest plaintext. -1 if the next frame is not
- * an ENVELOPE or the two key derivations disagree. */
+ * channel and hand back the DeviceRequest plaintext. The ENVELOPE data is the
+ * SessionData inside a DO'53, as the reference stack sends it (session.cpp
+ * StartStepUpExchange); a device answers bare SessionData with GeneralError.
+ * -1 if the next frame is not such an ENVELOPE or the two key derivations
+ * disagree. */
 static int ph_take_envelope(struct ph *p, uint8_t *out, size_t cap, size_t *out_len)
 {
 	size_t n;
 	const uint8_t *f = tx_next(&n);
-	const uint8_t *body, *blob;
-	size_t blen, bl;
+	const uint8_t *body, *sd, *blob;
+	size_t blen, sdn, bl;
 	uint8_t ins, skr[32], skd[32];
 	uint32_t ctr = 1;
 
 	if (f == NULL || parse_cmd(f, n, &ins, &body, &blen) != 0 || ins != ULTRAWIDELOCK_INS_ENVELOPE) {
 		return -1;
 	}
-	if (ultrawidelock_stepup_unwrap_sessiondata_raw(body, blen, &blob, &bl) != 0 || bl < 16 ||
+	if (ultrawidelock_stepup_unwrap_do53(body, blen, &sd, &sdn) != 0 ||
+	    ultrawidelock_stepup_unwrap_sessiondata_raw(sd, sdn, &blob, &bl) != 0 || bl < 16 ||
 	    bl - 16 > cap) {
 		return -1;
 	}
@@ -873,25 +886,26 @@ static int ph_take_envelope(struct ph *p, uint8_t *out, size_t cap, size_t *out_
 }
 
 /* Answer the ENVELOPE: a DeviceResponse sealed on the StepUpSK device channel
- * (SessionData {"data": ct||tag}) plus the status word. n == 0 sends the bare
- * status word, which is how a device declines. */
+ * (SessionData {"data": ct||tag}) inside a DO'53, plus the status word. n == 0
+ * sends the bare status word, which is how a device declines. */
 static void ph_stepup_resp(struct ph *p, uint16_t conn, const uint8_t *devresp, size_t n,
 			   uint8_t sw1, uint8_t sw2)
 {
-	uint8_t skr[32], skd[32], blob[1100], pl[1200];
+	uint8_t skr[32], skd[32], blob[1100], sd[1150], pl[1200];
 	uint32_t ctr = 1;
-	size_t sdn = 0;
+	size_t sdn = 0, pn = 0;
 
 	if (n > 0) {
 		ultrawidelock_stepup_derive_keys(p->block, skr, skd);
 		if (ph_seal(skd, &ctr, NULL, 0, devresp, n, blob, blob + n) != 0 ||
-		    ultrawidelock_stepup_wrap_sessiondata_raw(blob, n + 16, pl, sizeof(pl) - 2, &sdn) != 0) {
+		    ultrawidelock_stepup_wrap_sessiondata_raw(blob, n + 16, sd, sizeof(sd), &sdn) != 0 ||
+		    ultrawidelock_stepup_wrap_do53(sd, sdn, pl, sizeof(pl) - 2, &pn) != 0) {
 			return;
 		}
 	}
-	pl[sdn] = sw1;
-	pl[sdn + 1] = sw2;
-	ph_send(conn, ULTRAWIDELOCK_PROTO_ACCESS, ULTRAWIDELOCK_AP_OP_RESPONSE, pl, sdn + 2);
+	pl[pn] = sw1;
+	pl[pn + 1] = sw2;
+	ph_send(conn, ULTRAWIDELOCK_PROTO_ACCESS, ULTRAWIDELOCK_AP_OP_RESPONSE, pl, pn + 2);
 }
 
 /* Mint an Access Document: an ISO 18013-5 DeviceResponse whose one "aliro-a"
@@ -2575,7 +2589,7 @@ int main(void)
 		uint8_t rogue_priv[32], rogue_pub[65], rkid[8];
 		uint8_t devreq[256], doc[1024];
 		size_t drn, dn;
-		struct ph q, r;
+		struct ph q, r, u;
 		int learned = s_learned_calls;
 		int stores, starts, disconnects;
 
@@ -2607,6 +2621,13 @@ int main(void)
 		memcpy(r.rvk, q.rvk, sizeof(r.rvk));
 		memset(r.cred_priv, 0xC8, sizeof(r.cred_priv));
 		ultrawidelock_ec_p256_pub_from_priv(r.cred_priv, r.cred_pub);
+		memset(&u, 0, sizeof(u));
+		memcpy(u.rvk, q.rvk, sizeof(u.rvk));
+		memset(u.cred_priv, 0xC9, sizeof(u.cred_priv));
+		ultrawidelock_ec_p256_pub_from_priv(u.cred_priv, u.cred_pub);
+		/* q and r hold a document and say so; u holds none (bitmap clear). */
+		q.signaling = 0x0001u;
+		r.signaling = 0x0001u;
 
 		/* Eight walk-ups of up to five frames each: reclaim the recording
 		 * queue here and again midway. */
@@ -2738,6 +2759,21 @@ int main(void)
 		    s_learned_calls == learned + 2 && s_learned_index == 2u &&
 			    memcmp(s_learned_pub, r.cred_pub, 65) == 0);
 		s_cfg.cb.on_disconnected(76);
+
+		/* G9: an unknown key whose AUTH1 does not advertise an Access
+		 * Document (signaling bit 0 clear) is not asked for one: the
+		 * reference stack sends no ENVELOPE then, and neither does the
+		 * reader. Rejected at AUTH1, no EXCHANGE. */
+		tx_reset();
+		disconnects = s_disconnects;
+		s_cfg.cb.on_connected(78);
+		ph_initiate(&u, 78, 0);
+		okc("g9.auth0", ph_take_auth0(&u) == 0);
+		ph_auth0_resp(&u, 78, 0xEF);
+		okc("g9.auth1_resp", ph_auth1_resp(&u, 78, NULL, 0) == 0);
+		okc("g9.rejected_at_auth1", tx_pending() == 0 && s_disconnects == disconnects + 1);
+		okc("g9.nothing_learned", s_learned_calls == learned + 2);
+		s_cfg.cb.on_disconnected(78);
 
 		/* G8: revoking the issuer revokes both keys it vouched for. Without
 		 * an issuer the verdict is the old one: rejected at AUTH1, no

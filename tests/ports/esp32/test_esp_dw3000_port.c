@@ -238,6 +238,17 @@ static void t_spi_framing(void)
 	okc("trace no-op", 1);
 }
 
+/* The clock of the device handle the next transfer goes out on. */
+static int spi_hz_in_use(void)
+{
+	uint8_t hdr[2] = {0x40, 0x02};
+	uint8_t body[1];
+
+	fake_spi_txn_count = 0;
+	dw3000_spi_read(2, hdr, 1, body);
+	return fake_spi_txns[0].dev->cfg.clock_speed_hz;
+}
+
 static void t_hw(void)
 {
 	printf("-- hw init / reset / wakeup / irq --\n");
@@ -252,12 +263,16 @@ static void t_hw(void)
 	dw3000_hw_mark_asleep();
 	okc("marked asleep", dw3000_hw_is_asleep());
 	fake_delay_calls = 0;
+	dw3000_spi_speed_fast();
 	dw3000_hw_reset();
 	okc("reset released RST to input",
 	    fake_gpio_mode[ULTRAWIDELOCK_DW3000_PIN_RST] == GPIO_MODE_INPUT &&
 	    fake_gpio_level[ULTRAWIDELOCK_DW3000_PIN_RST] == 0);
 	okc("reset waited (1+2 ticks)", fake_delay_total_ticks >= 3);
 	okc("reset cleared asleep", !dw3000_hw_is_asleep());
+	/* Out of reset the part is in INIT_RC, which only takes the slow clock. */
+	okc("reset drops SPI to the slow clock",
+	    spi_hz_in_use() == ULTRAWIDELOCK_DW3000_SPI_SLOW_HZ);
 
 	/* Wakeup: no-op when awake; CS-wake + IDLE_RC poll when asleep. */
 	fake_rom_delay_calls = 0;
@@ -265,13 +280,18 @@ static void t_hw(void)
 	okc("wakeup no-op when awake", fake_rom_delay_calls == 0);
 	dw3000_hw_mark_asleep();
 	s_idlerc = 1;
+	dw3000_spi_speed_slow();
 	dw3000_hw_wakeup();
 	okc("wakeup ran CS-wake", fake_rom_delay_calls >= 1 && !dw3000_hw_is_asleep());
+	okc("wakeup into IDLE_RC ends on the fast clock",
+	    spi_hz_in_use() == ULTRAWIDELOCK_DW3000_SPI_FAST_HZ);
 	dw3000_hw_mark_asleep();
 	s_idlerc = 0; /* chip never reaches IDLE_RC: exhaust the 500-spin poll */
 	fake_rom_delay_calls = 0;
 	dw3000_hw_wakeup();
 	okc("wakeup poll exhausts at 500 spins", fake_rom_delay_calls >= 500);
+	okc("a part that never reached IDLE_RC stays on the slow clock",
+	    spi_hz_in_use() == ULTRAWIDELOCK_DW3000_SPI_SLOW_HZ);
 	s_idlerc = 1;
 
 	dw3000_hw_wakeup_pin_low();
@@ -281,7 +301,11 @@ static void t_hw(void)
 	fake_gpio_isr_service_rc = ESP_FAIL;
 	okc("isr-service failure", dw3000_hw_init_interrupt() == -1);
 	fake_gpio_isr_service_rc = ESP_ERR_INVALID_STATE; /* already installed: fine */
+	dw3000_spi_speed_slow();
 	okc("init_interrupt rc", dw3000_hw_init_interrupt() == 0);
+	/* The bring-up's last call, with the part initialised: fast from here on. */
+	okc("radio up: SPI on the fast clock",
+	    spi_hz_in_use() == ULTRAWIDELOCK_DW3000_SPI_FAST_HZ);
 	okc("IRQ pin input + posedge",
 	    fake_gpio_mode[ULTRAWIDELOCK_DW3000_PIN_IRQ] == GPIO_MODE_INPUT &&
 	    fake_gpio_intr[ULTRAWIDELOCK_DW3000_PIN_IRQ] == GPIO_INTR_POSEDGE);

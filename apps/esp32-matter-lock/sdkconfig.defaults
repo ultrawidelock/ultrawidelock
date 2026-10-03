@@ -188,14 +188,23 @@ CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 # is 16 KiB that never comes back. Kconfig allows 2 to 25.
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 
-# Non-ISR heap, ring-buffer and FreeRTOS functions out of IRAM: 5.9 KiB, 4.0 KiB
-# and up to 8 KiB (door_lock.map and the IDF help text). Safe here because no
-# interrupt handler in this app or the credential module is IRAM-resident
-# (no IRAM_ATTR, no *_ISR_IN_IRAM), so nothing calls them with the cache off;
-# the ISR variants of each stay in IRAM for the Wi-Fi and BLE controllers.
+# Non-ISR heap and ring-buffer functions out of IRAM: 5.9 KiB and 4.0 KiB
+# (door_lock.map). Safe here because no interrupt handler in this app or the
+# credential module is IRAM-resident (no IRAM_ATTR, no *_ISR_IN_IRAM), so
+# nothing calls them with the cache off; the ISR variants of each stay in IRAM
+# for the Wi-Fi and BLE controllers.
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
-CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+
+# FreeRTOS stays in IRAM (the IDF default), at up to 8 KiB of the heap won
+# above. Every DW3000 SPI transfer takes and gives a FreeRTOS mutex
+# (dw3000_spi.c), and the Pre-POLL -> POLL arm is a run of those transfers
+# against a 1836 us deadline once per 192 ms block. Field log with this at =y
+# (and the SPI clock still at 2 MHz): dsys 1608-1697 us where 1433-1616 us was
+# measured before, ARM FAIL on every block, no range. How much of that slip is
+# this option was not measured apart from the SPI clock; take a dsys capture
+# (`uwbdiag on`) before moving it back to flash for the heap.
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=n
 
 # ---- over-the-air updates, over Bluetooth --------------------------------
 #

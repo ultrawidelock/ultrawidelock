@@ -295,8 +295,9 @@ int ultrawidelock_apdu_parse_auth0_response(const uint8_t *buf, size_t len,
 // Parses an AUTH1 response APDU body, extracting the device's signature and optional device public
 // key. buf/len is the APDU body with any status word already stripped. The device signature (tag
 // ULTRAWIDELOCK_TAG_SIG) is mandatory and must be exactly 64 bytes; the device public key (tag
-// ULTRAWIDELOCK_TAG_DEVICE_PUB) is optional and, if present, must be exactly 65 bytes. A
-// signaling-bitmap item at tag 0x91 is recognized but ignored. Returns 0 on success with *r
+// ULTRAWIDELOCK_TAG_DEVICE_PUB) is optional and, if present, must be exactly 65 bytes. The
+// signaling bitmap (tag 0x5E, 2 bytes big-endian, as the reference stack's nfc_auth.c reads it)
+// is optional and left 0 when absent or malformed. Returns 0 on success with *r
 // populated (zero-initialized first); returns -1 if the mandatory signature TLV is missing or has
 // the wrong length.
 int ultrawidelock_apdu_parse_auth1_response(const uint8_t *buf, size_t len,
@@ -314,9 +315,8 @@ int ultrawidelock_apdu_parse_auth1_response(const uint8_t *buf, size_t len,
 		r->have_device_pub = 1;
 		memcpy(r->device_pub, v, 65);
 	}
-	if (ultrawidelock_tlv_find(buf, len, 0x91u, &v, &vl) == 0) {
-		/* signaling bitmap rides as a bare 2-byte item on some builds; the
-		 * mandatory device signature above is what we gate on. */
+	if (ultrawidelock_tlv_find(buf, len, 0x5Eu, &v, &vl) == 0 && vl == 2) {
+		r->signaling = (uint16_t)(((uint16_t)v[0] << 8) | v[1]);
 	}
 	return 0;
 }

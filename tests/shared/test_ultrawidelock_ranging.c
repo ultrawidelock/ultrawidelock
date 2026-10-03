@@ -271,6 +271,22 @@ void ultrawidelock_uwb_stop(void)
 	s_uwb_stops++;
 }
 
+/* The facade's last range and its age; ultrawidelock_ranging_last_range_age_ms
+ * hands the age through. s_uwb_age_ms < 0 means no range yet. */
+static int64_t s_uwb_age_ms = -1;
+
+bool ultrawidelock_uwb_last_range_age_cm(int32_t *cm_out, int64_t *age_ms_out)
+{
+	if (s_uwb_age_ms < 0) {
+		return false;
+	}
+	*cm_out = 100;
+	if (age_ms_out != NULL) {
+		*age_ms_out = s_uwb_age_ms;
+	}
+	return true;
+}
+
 /* ---- ultrawidelock_ble transport double ------------------------------------------ */
 
 #define TX_MAX 8
@@ -637,6 +653,17 @@ int main(void)
 	}
 
 	ultrawidelock_ranging_stop(3);
+
+	/* The reader's idle cap reads the range age through here. */
+	{
+		int64_t age = 0;
+
+		s_uwb_age_ms = -1;
+		okc("a.no_range", !ultrawidelock_ranging_last_range_age_ms(&age));
+		s_uwb_age_ms = 1234;
+		okc("a.age_passed_through",
+		    ultrawidelock_ranging_last_range_age_ms(&age) && age == 1234);
+	}
 
 	printf("\nRESULT: %s\n", fails == 0 ? "PASS" : "FAIL");
 	return fails == 0 ? 0 : 1;

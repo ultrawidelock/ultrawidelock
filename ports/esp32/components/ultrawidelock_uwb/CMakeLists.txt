@@ -104,6 +104,15 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     CONFIG_ULTRAWIDELOCK_CRED=1
     CONFIG_DW3000=1
     CONFIG_DW3000_CHIP_DW3000=1
+    # The CDK's Final_Data path: a delayed SP0 RX window scheduled in hardware
+    # at the Final_Data slot, the deferred Pre-POLL decode moved after that arm,
+    # and the post-FINAL fate counters. Its Kconfig help already says ESP32 uses
+    # it, but only the timestamp snapshot was ever keyed on ESP_PLATFORM; the
+    # window was not, so the FINAL callback re-armed SP0 by hand and the SP0
+    # Final_Data 2 ms behind the FINAL was never decoded (field log, ESP32-S3:
+    # 45 Responses sent, final=0 range=0; FINAL itself caught with cper=0).
+    # The port already defines the g_dw_cyc_* stamps this consumes.
+    CONFIG_ULTRAWIDELOCK_UWB_FINAL_SNAPSHOT=1
 )
 
 # Two-anchor rounds. A project sets these before including project.cmake, so
