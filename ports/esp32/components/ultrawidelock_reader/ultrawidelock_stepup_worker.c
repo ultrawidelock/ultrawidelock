@@ -24,7 +24,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 
-#include "ultrawidelock_prim.h" /* ultrawidelock_ecdsa_p256_verify (PSA ES256) */
+#include "ultrawidelock_prim.h" /* ultrawidelock_ecdsa_p256_verify_hash (PSA ES256) */
 #include "ultrawidelock_stepup.h"
 
 #if defined(CONFIG_ULTRAWIDELOCK_CRED_STEPUP_BENCH)
@@ -113,7 +113,7 @@ static void run_job(const struct ultrawidelock_stepup_job *job)
 	ctx.now_epoch = job->now_epoch;
 	ctx.access_iteration = 0;
 	ctx.expected_doctype = ULTRAWIDELOCK_STEPUP_DOCTYPE_ACCESS;
-	ctx.ecdsa_verify = ultrawidelock_ecdsa_p256_verify;
+	ctx.ecdsa_verify_hash = ultrawidelock_ecdsa_p256_verify_hash;
 
 	struct ultrawidelock_stepup_verdict v;
 

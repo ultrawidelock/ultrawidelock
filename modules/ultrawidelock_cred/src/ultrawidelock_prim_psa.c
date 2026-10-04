@@ -448,3 +448,28 @@ int ultrawidelock_ecdsa_p256_verify(const uint8_t pub[ULTRAWIDELOCK_P256_POINT],
 	psa_destroy_key(k);
 	return rc;
 }
+
+// Verify an ECDSA-P256 signature against an already computed SHA-256 digest and public key, via
+// PSA Crypto. Returns 0 if the signature verifies, -1 if public key import fails or verification
+// fails.
+int ultrawidelock_ecdsa_p256_verify_hash(const uint8_t pub[ULTRAWIDELOCK_P256_POINT],
+					 const uint8_t hash[32],
+					 const uint8_t sig[ULTRAWIDELOCK_P256_SIG])
+{
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t k = 0;
+	int rc = -1;
+
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_VERIFY_HASH);
+	psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+	psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+	if (psa_import_key(&attr, pub, ULTRAWIDELOCK_P256_POINT, &k) != PSA_SUCCESS) {
+		return -1;
+	}
+	if (psa_verify_hash(k, PSA_ALG_ECDSA(PSA_ALG_SHA_256), hash, 32u, sig,
+			    ULTRAWIDELOCK_P256_SIG) == PSA_SUCCESS) {
+		rc = 0;
+	}
+	psa_destroy_key(k);
+	return rc;
+}

@@ -12,7 +12,8 @@
  *          signatures really verify (checked at generation with the cryptography
  *          library). Drives the full verifier + every reject branch. The ES256
  *          primitive is a stub that, in GOLDEN mode, asserts the module handed it
- *          exactly the Sig_structure/signature/pubkey the real signer used.
+ *          the SHA-256 of exactly the Sig_structure, and the signature and pubkey,
+ *          the real signer used.
  */
 #include <stdio.h>
 #include <string.h>
@@ -118,23 +119,29 @@ static const char *K_VDIGEST1 =
 
 /* ---- injected ES256 (see file header) ------------------------------------ */
 
-enum { MODE_GOLDEN, MODE_ACCEPT, MODE_REJECT };
+enum { MODE_GOLDEN, MODE_ACCEPT, MODE_REJECT, MODE_EXPECT };
 static int g_mode;
 static int g_golden_ss_ok;
 static int g_calls;
+static uint8_t g_expect_hash[32]; /* MODE_EXPECT: the only digest accepted */
 
-static int stub_verify(const uint8_t pub[65], const uint8_t *msg, size_t len, const uint8_t sig[64])
+static int stub_verify(const uint8_t pub[65], const uint8_t hash[32], const uint8_t sig[64])
 {
 	g_calls++;
 	if (g_mode == MODE_REJECT) {
 		return -1;
 	}
 	if (g_mode == MODE_GOLDEN) {
-		g_golden_ss_ok = len == SV_GOLDEN_SIGSTRUCT_len &&
-				 memcmp(msg, SV_GOLDEN_SIGSTRUCT, len) == 0 &&
+		uint8_t want[32];
+
+		ultrawidelock_sha256(SV_GOLDEN_SIGSTRUCT, SV_GOLDEN_SIGSTRUCT_len, want);
+		g_golden_ss_ok = memcmp(hash, want, 32) == 0 &&
 				 memcmp(sig, SV_GOLDEN_SIG, 64) == 0 &&
 				 memcmp(pub, SV_ISSUER_PUB, 65) == 0;
 		return g_golden_ss_ok ? 0 : -1;
+	}
+	if (g_mode == MODE_EXPECT) {
+		return memcmp(hash, g_expect_hash, 32) == 0 ? 0 : -1;
 	}
 	return 0; /* MODE_ACCEPT */
 }
@@ -157,7 +164,7 @@ static struct ultrawidelock_stepup_verify_ctx base_ctx(const uint8_t *kid, size_
 	ctx.now_epoch = SV_EPOCH_NOW;
 	ctx.access_iteration = 0;
 	ctx.expected_doctype = ULTRAWIDELOCK_STEPUP_DOCTYPE_ACCESS;
-	ctx.ecdsa_verify = stub_verify;
+	ctx.ecdsa_verify_hash = stub_verify;
 	return ctx;
 }
 
@@ -292,6 +299,7 @@ static void t_synth_good_and_rejects(void)
 
 	chk("good valid", rc == 0 && v.valid);
 	chk("good Sig_structure==golden", g_golden_ss_ok == 1);
+	chk("good Sig_structure length", v.sig_struct_len == SV_GOLDEN_SIGSTRUCT_len);
 	chk("good sig_ok", v.sig_ok);
 	chk("good chain_validated (kid)", v.issuer_chain_validated == 1);
 	chk("good valid_elements 1", v.valid_elements == 1);
@@ -331,7 +339,55 @@ static void t_synth_good_and_rejects(void)
 	/* No trusted clock + TimeVerificationRequired=false -> accepted (MAY). */
 	verify_bytes(SV_TIMEVER_FALSE, SV_TIMEVER_FALSE_len, &ctx, &v);
 	chk("no-clock+not-required valid", v.valid && v.time_ok);
+
+	/* The ratchet: a reader with no clock takes the validFrom of a document
+	 * whose signature verified as the time, and reports it. */
+	ctx.time_ratchet = 1;
+	verify_bytes(SV_GOOD, SV_GOOD_len, &ctx, &v);
+	chk("ratchet no-clock+required valid", v.valid && v.time_ok);
+	chk("ratchet reports validFrom", v.ratchet_epoch == SV_EPOCH_VALID_FROM);
+
+	/* A date nobody signed moves nothing: step 2 fails, and so does step 5. */
+	g_mode = MODE_REJECT;
+	verify_bytes(SV_GOOD, SV_GOOD_len, &ctx, &v);
+	chk("ratchet needs the signature",
+	    v.reject_step == 2 && !v.time_ok && v.ratchet_epoch == 0);
+	g_mode = MODE_ACCEPT;
+
+	/* validFrom after validUntil is no window: nothing to take the time from. */
+	{
+		static uint8_t b[400];
+		size_t i;
+
+		memcpy(b, SV_GOOD, SV_GOOD_len);
+		for (i = 0; i + 4 < SV_GOOD_len; i++) {
+			if (memcmp(b + i, "2025", 4) == 0) { /* validUntil 2025 -> 2023 */
+				b[i + 3] = '3';
+				break;
+			}
+		}
+		verify_bytes(b, SV_GOOD_len, &ctx, &v);
+		chk("ratchet from>until reject step 5",
+		    i + 4 < SV_GOOD_len && v.sig_ok && v.reject_step == 5 && v.ratchet_epoch == 0);
+	}
+
+	/* A clock behind validFrom is moved up to it instead of failing. */
 	ctx.time_valid = 1;
+	ctx.now_epoch = SV_EPOCH_VALID_FROM - 1;
+	verify_bytes(SV_GOOD, SV_GOOD_len, &ctx, &v);
+	chk("ratchet clock-behind valid", v.valid && v.ratchet_epoch == SV_EPOCH_VALID_FROM);
+
+	/* A clock inside the window is left alone. */
+	ctx.now_epoch = SV_EPOCH_NOW;
+	verify_bytes(SV_GOOD, SV_GOOD_len, &ctx, &v);
+	chk("ratchet clock-inside untouched", v.valid && v.ratchet_epoch == 0);
+
+	/* It never moves back: past validUntil is expired, ratchet or not. */
+	ctx.now_epoch = SV_EPOCH_VALID_UNTIL + 1;
+	verify_bytes(SV_GOOD, SV_GOOD_len, &ctx, &v);
+	chk("ratchet expired reject step 5", v.reject_step == 5 && v.ratchet_epoch == 0);
+	ctx.now_epoch = SV_EPOCH_NOW;
+	ctx.time_ratchet = 0;
 
 	/* ValidityIteration: VI=1 < AccessIteration=20, diff 19>=8 -> step 6. */
 	ctx.access_iteration = 20;
@@ -363,6 +419,14 @@ static void t_synth_good_and_rejects(void)
 	chk("x5chain chain NOT validated", v.issuer_chain_validated == 0);
 	chk("x5chain Sig_structure==golden", g_golden_ss_ok == 1);
 	g_mode = MODE_ACCEPT;
+
+	/* A key the document's own certificate brought along is no authority on
+	 * the time: the ratchet takes nothing from a document it signed. */
+	xctx.time_valid = 0;
+	xctx.time_ratchet = 1;
+	verify_bytes(SV_X5CHAIN, SV_X5CHAIN_len, &xctx, &v);
+	chk("x5chain never ratchets",
+	    v.sig_ok && !v.issuer_chain_validated && v.ratchet_epoch == 0);
 
 	/* No documents returned -> reject (no data elements). */
 	rc = verify_bytes(SV_NO_DOC, SV_NO_DOC_len, &ctx, &v);
@@ -879,7 +943,10 @@ static void t_stepup_edges(void)
 	chk("envelope cap too small", ultrawidelock_stepup_build_envelope(out, 32, 0, out, 8, &n) == -1);
 	chk("get_response cap too small", ultrawidelock_stepup_build_get_response(0, out, 4, &n) == -1);
 
-	/* Oversized protected header: Sig_structure build fails -> reject step 2. */
+	/* A 600-byte protected header: the Sig_structure is 774 bytes, which the
+	 * verifier used to build in a 512-byte buffer and so rejected at step 2
+	 * without asking the primitive. It is hashed in pieces now, and the digest
+	 * handed to ES256 is that of the whole structure: the signature decides. */
 	struct ultrawidelock_stepup_verify_ctx ctx = base_ctx(SV_KID, SV_KID_len, SV_ISSUER_PUB);
 	struct ultrawidelock_stepup_verdict v;
 	struct ultrawidelock_stepup_doc doc;
@@ -899,11 +966,114 @@ static void t_stepup_edges(void)
 		memcpy(b + bn, SV_GOOD + 91, SV_GOOD_len - 91);
 		bn += SV_GOOD_len - 91;
 		chk("big-protected parse", ultrawidelock_stepup_parse_response(b, bn, &doc) == 0);
-		chk("big-protected reject step 2",
+
+		/* 84 6a "Signature1" | 59 02 58 <600 zeros> | 40 58 9c <payload> */
+		static uint8_t ss[12 + 3 + 600 + 159];
+
+		memcpy(ss, SV_GOLDEN_SIGSTRUCT, 12);
+		ss[12] = 0x59;
+		ss[13] = 0x02;
+		ss[14] = 0x58;
+		memset(ss + 15, 0, 600);
+		memcpy(ss + 615, SV_GOLDEN_SIGSTRUCT + 16, 159);
+		ultrawidelock_sha256(ss, sizeof(ss), g_expect_hash);
+		g_mode = MODE_EXPECT;
+		chk("big-protected digest of the whole Sig_structure",
+		    ultrawidelock_stepup_verify(&doc, &ctx, &v) == 0 && v.sig_ok &&
+			    v.sig_struct_len == sizeof(ss));
+		g_mode = MODE_REJECT;
+		chk("big-protected bad sig reject step 2",
 		    ultrawidelock_stepup_verify(&doc, &ctx, &v) == -1 && v.reject_step == 2 && !v.sig_ok);
+		g_mode = MODE_ACCEPT;
 	}
 
-	/* >=64 KiB payload: CBOR writer takes the 4-byte-length arm, then errors. */
+	/* The two head sizes in between, each against a Sig_structure built here
+	 * byte by byte: a 100-byte protected header (58 64) ... */
+	{
+		static uint8_t b[600], ss[12 + 2 + 100 + 159];
+		size_t bn = 0;
+
+		memcpy(b, SV_GOOD, 87);
+		bn = 87;
+		b[bn++] = 0x58;
+		b[bn++] = 0x64;
+		memset(b + bn, 0, 100);
+		bn += 100;
+		memcpy(b + bn, SV_GOOD + 91, SV_GOOD_len - 91);
+		bn += SV_GOOD_len - 91;
+		chk("mid-protected parse", ultrawidelock_stepup_parse_response(b, bn, &doc) == 0);
+		memcpy(ss, SV_GOLDEN_SIGSTRUCT, 12);
+		ss[12] = 0x58;
+		ss[13] = 0x64;
+		memset(ss + 14, 0, 100);
+		memcpy(ss + 114, SV_GOLDEN_SIGSTRUCT + 16, 159);
+		ultrawidelock_sha256(ss, sizeof(ss), g_expect_hash);
+		g_mode = MODE_EXPECT;
+		chk("mid-protected digest of the whole Sig_structure",
+		    ultrawidelock_stepup_verify(&doc, &ctx, &v) == 0 && v.sig_ok &&
+			    v.sig_struct_len == sizeof(ss));
+		g_mode = MODE_ACCEPT;
+	}
+
+	/* ... and a 605-byte payload (59 02 5d), the size a phone's MSO is: the
+	 * one the 512-byte buffer refused. */
+	{
+		static uint8_t b[1100], ss[17 + 3 + 605];
+		size_t bn = 0;
+
+		memcpy(b, SV_GOOD, 98);
+		bn = 98;
+		b[bn++] = 0x59; /* payload: bstr(605) */
+		b[bn++] = 0x02;
+		b[bn++] = 0x5d;
+		b[bn++] = 0xd8; /* 24(bstr(600)) */
+		b[bn++] = 0x18;
+		b[bn++] = 0x59;
+		b[bn++] = 0x02;
+		b[bn++] = 0x58;
+		memcpy(b + bn, SV_GOOD + 104, 152); /* the real MSO map */
+		bn += 152;
+		memset(b + bn, 0, 600 - 152); /* MSO trailing padding */
+		bn += 600 - 152;
+		memcpy(b + bn, SV_GOOD + 256, SV_GOOD_len - 256); /* sig + docType + status */
+		bn += SV_GOOD_len - 256;
+		chk("mid-payload parse", ultrawidelock_stepup_parse_response(b, bn, &doc) == 0);
+		memcpy(ss, SV_GOLDEN_SIGSTRUCT, 17); /* ... "Signature1" 43 a1 01 26 40 */
+		ss[17] = 0x59;
+		ss[18] = 0x02;
+		ss[19] = 0x5d;
+		memcpy(ss + 20, b + 101, 605);
+		ultrawidelock_sha256(ss, sizeof(ss), g_expect_hash);
+		g_mode = MODE_EXPECT;
+		ultrawidelock_stepup_verify(&doc, &ctx, &v);
+		chk("mid-payload digest of the whole Sig_structure",
+		    v.sig_ok && v.sig_struct_len == sizeof(ss));
+		g_mode = MODE_ACCEPT;
+	}
+
+	/* A document with no IssuerAuth has no signature. Step 2 fails without
+	 * the primitive being called: it used to be handed the NULL, and an ES256
+	 * backend that copies its input reads through it. */
+	{
+		static const uint8_t noauth[] = {
+			0xa2, 0x61, 0x32, 0x81, 0xa2, 0x61, 0x31, 0xa1, 0x61, 0x31, 0xa1,
+			0x61, 0x61, 0x81, 0xd8, 0x18, 0x41, 0xa0, 0x61, 0x35, 0x67, 'a',
+			'l',  'i',  'r',  'o',  '-',  'a',  0x61, 0x33, 0x00,
+		};
+		static uint8_t b[sizeof(noauth)];
+		int calls = g_calls;
+
+		memcpy(b, noauth, sizeof(noauth));
+		chk("no-IssuerAuth parse",
+		    ultrawidelock_stepup_parse_response(b, sizeof(noauth), &doc) == 0 &&
+			    doc.signature == NULL && doc.n_items > 0);
+		chk("no-IssuerAuth reject step 2, primitive not called",
+		    ultrawidelock_stepup_verify(&doc, &ctx, &v) == -1 && v.reject_step == 2 &&
+			    !v.sig_ok && g_calls == calls);
+	}
+
+	/* >=64 KiB payload: the bstr head takes the 4-byte-length arm, and the
+	 * digest still covers every byte of it. */
 	{
 		static uint8_t b[70500];
 		size_t bn = 0;
@@ -929,8 +1099,23 @@ static void t_stepup_edges(void)
 		memcpy(b + bn, SV_GOOD + 256, SV_GOOD_len - 256); /* sig + docType + status */
 		bn += SV_GOOD_len - 256;
 		chk("huge-payload parse", ultrawidelock_stepup_parse_response(b, bn, &doc) == 0);
-		chk("huge-payload reject step 2",
+
+		/* 84 6a "Signature1" 43 a1 01 26 40 | 5a 00 01 11 77 | <70007 B payload> */
+		struct ultrawidelock_sha256 h;
+
+		ultrawidelock_sha256_init(&h);
+		ultrawidelock_sha256_update(&h, SV_GOLDEN_SIGSTRUCT, 17);
+		ultrawidelock_sha256_update(&h, b + 98, 5);
+		ultrawidelock_sha256_update(&h, b + 103, 70007);
+		ultrawidelock_sha256_final(&h, g_expect_hash);
+		g_mode = MODE_EXPECT;
+		ultrawidelock_stepup_verify(&doc, &ctx, &v);
+		chk("huge-payload digest of the whole Sig_structure",
+		    v.sig_ok && v.sig_struct_len == 17u + 5u + 70007u);
+		g_mode = MODE_REJECT;
+		chk("huge-payload bad sig reject step 2",
 		    ultrawidelock_stepup_verify(&doc, &ctx, &v) == -1 && v.reject_step == 2 && !v.sig_ok);
+		g_mode = MODE_ACCEPT;
 	}
 
 	/* x5chain too short / without an SPKI marker -> issuer key not found. */

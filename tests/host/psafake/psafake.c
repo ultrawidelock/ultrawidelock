@@ -359,6 +359,20 @@ psa_status_t psa_verify_message(psa_key_id_t key, psa_algorithm_t alg, const uin
 	return psafake.verify_ret;
 }
 
+psa_status_t psa_verify_hash(psa_key_id_t key, psa_algorithm_t alg, const uint8_t *hash,
+			     size_t hash_length, const uint8_t *signature,
+			     size_t signature_length)
+{
+	(void)key;
+	(void)hash;
+	(void)signature;
+	psafake.verify_calls++;
+	psafake.last_alg = alg;
+	psafake.last_msg_len = hash_length;
+	psafake.last_sig_len = signature_length;
+	return psafake.verify_ret;
+}
+
 /* ── mbedTLS AES double ────────────────────────────────────────────────────── */
 void mbedtls_aes_init(mbedtls_aes_context *ctx)
 {

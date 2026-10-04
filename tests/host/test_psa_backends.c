@@ -374,6 +374,20 @@ void test_ultrawidelock_prim_psa(void)
 	psafake.verify_ret = PSA_ERROR_GENERIC;
 	T_EQ("bad signature -> -1", ultrawidelock_ecdsa_p256_verify(pub, MSG, 20, sig), -1);
 	T_EQ("destroy after verify fail", (long)psafake.destroy_calls, 1L);
+	psafake_reset();
+	T_EQ("verify hash ok", ultrawidelock_ecdsa_p256_verify_hash(pub, HASH, sig), 0);
+	T_EQ("usage VERIFY_HASH", (long)psafake.attr_usage, (long)PSA_KEY_USAGE_VERIFY_HASH);
+	T_EQ("verify hash type public key", (long)psafake.attr_type,
+	     (long)PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+	T_EQ("verify hash len plumbed", (long)psafake.last_msg_len, 32L);
+	T_EQ("verify hash sig len 64", (long)psafake.last_sig_len, 64L);
+	psafake.import_ret = PSA_ERROR_GENERIC;
+	T_EQ("verify hash import fail -> -1", ultrawidelock_ecdsa_p256_verify_hash(pub, HASH, sig),
+	     -1);
+	psafake_reset();
+	psafake.verify_ret = PSA_ERROR_GENERIC;
+	T_EQ("bad hash signature -> -1", ultrawidelock_ecdsa_p256_verify_hash(pub, HASH, sig), -1);
+	T_EQ("destroy after verify hash fail", (long)psafake.destroy_calls, 1L);
 
 	/* Against a backend that holds a block back, every psa_aead_update() must
 	 * be offered input_length + one block. Sizing the bulk output to the input

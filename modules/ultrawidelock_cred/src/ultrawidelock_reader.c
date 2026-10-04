@@ -34,6 +34,7 @@
 #include "ultrawidelock_ble.h"
 #include "ultrawidelock_apdu.h"
 #include "ultrawidelock_crypto.h"
+#include "ultrawidelock_hash.h"
 #include "ultrawidelock_lab.h"
 #include "ultrawidelock_lat.h"
 #include "ultrawidelock_prim.h"
@@ -302,6 +303,13 @@ static uint16_t s_stepup_sd_owner = STEPUP_SD_FREE;
  * 1.5 KiB buffer for the plaintext is what the anchorlink and release client
  * images could not spare. */
 static struct ultrawidelock_stepup_doc s_learn_doc;
+
+/* The reader's only notion of the time of day, for a document's validity window:
+ * the newest validFrom of a document a stored issuer signed and whose key the
+ * reader learned, UTC seconds, 0 until the first. RAM only, so a reboot forgets
+ * it and until the next learned document sets it again an expired document is
+ * not recognised as expired. BLE-host task only. */
+static int64_t s_doc_time;
 
 /* Give the collection buffer back if conn holds it; a no-op otherwise. */
 static void stepup_sd_release(uint16_t conn)
@@ -1529,7 +1537,7 @@ static void stepup_submit_job(struct ultrawidelock_session *s)
  * §7.4 verdict for the log. */
 static int learn_verify(struct ultrawidelock_session *s,
 			uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN], const char **why,
-			struct ultrawidelock_stepup_verdict *v)
+			struct ultrawidelock_stepup_verdict *v, bool *x5chain)
 {
 	struct ultrawidelock_stepup_issuer issuers[ULTRAWIDELOCK_ISSUER_MAX];
 	struct ultrawidelock_stepup_verify_ctx ctx;
@@ -1556,6 +1564,9 @@ static int learn_verify(struct ultrawidelock_session *s,
 		*why = "document did not authenticate";
 		return -1;
 	}
+	LOG_DBG("[conn %u] DeviceResponse DECRYPTED (%u B plaintext):", s->conn_handle,
+		(unsigned)dr_len);
+	LOG_HEXDUMP_DBG(s_stepup_sd, dr_len, "");
 	if (ultrawidelock_stepup_parse_response(s_stepup_sd, dr_len, &s_learn_doc) != 0) {
 		*why = "document malformed";
 		return -1;
@@ -1567,19 +1578,29 @@ static int learn_verify(struct ultrawidelock_session *s,
 	 * nothing about whom the admin trusts. Drop it so selection falls to
 	 * the store.
 	 */
+	*x5chain = s_learn_doc.x5chain != NULL;
 	s_learn_doc.x5chain = NULL;
 	s_learn_doc.x5chain_len = 0;
 	s_learn_doc.x5_cert = NULL;
 	s_learn_doc.x5_cert_len = 0;
 
 	memset(&ctx, 0, sizeof(ctx));
-	/* No trusted wall clock on either board: §7.2.4 then fails a document
-	 * that requires time verification, and passes one that does not. No
+	/* The reader is lent no wall clock on either board (the ESP32's SNTP
+	 * time is not passed in), and a document may require time
+	 * verification (§7.2.4), which a reader with no time must fail: the
+	 * first Watch document to reach a verdict in the field did, and failed
+	 * step 5 whatever its signature said. The time is the newest validFrom
+	 * a stored issuer has signed (s_doc_time), and a document ahead of it
+	 * moves it forward, as the reference lock's ratchet does
+	 * (docs/protocol-notes.md). A lean build parses no dates, so there the
+	 * ratchet has nothing to read and such a document still fails. No
 	 * access-iteration history is kept yet, so step 6 always passes. */
-	ctx.time_valid = 0;
+	ctx.time_valid = s_doc_time != 0;
+	ctx.now_epoch = s_doc_time;
+	ctx.time_ratchet = 1;
 	ctx.access_iteration = 0;
 	ctx.expected_doctype = ULTRAWIDELOCK_STEPUP_DOCTYPE_ACCESS;
-	ctx.ecdsa_verify = ultrawidelock_ecdsa_p256_verify;
+	ctx.ecdsa_verify_hash = ultrawidelock_ecdsa_p256_verify_hash;
 
 	/* Each provisioned issuer in turn, the document's own kid handed to the
 	 * selector so the signature is the check. The kid (Aliro §7.2.1, a
@@ -1593,10 +1614,17 @@ static int learn_verify(struct ultrawidelock_session *s,
 		ctx.n_issuers = 1;
 		if (ultrawidelock_stepup_verify(&s_learn_doc, &ctx, v) == 0) {
 			picked = i;
+		} else if (v->sig_ok) {
+			/* This issuer signed it and a later step refused it. No other
+			 * key verifies the same signature, and trying one would leave
+			 * that issuer's "bad signature" as the verdict that is logged:
+			 * a step-5 refusal under the first of two issuers read as
+			 * step=2 sig=0. */
+			break;
 		}
 	}
 	if (picked < 0) {
-		*why = "no provisioned issuer signed it";
+		*why = v->sig_ok ? "its document is not valid" : "no provisioned issuer signed it";
 		return -1;
 	}
 	if (!s_learn_doc.have_device_key ||
@@ -1607,6 +1635,57 @@ static int learn_verify(struct ultrawidelock_session *s,
 	memcpy(issuer_pub, issuers[picked].pub, ULTRAWIDELOCK_CRED_PUB_LEN);
 	return picked;
 }
+
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
+/* Seconds since 1970 for a log line; a validUntil in the year 4001 does not fit
+ * 32 bits and prints as the largest value that does. */
+static unsigned log_epoch(int64_t t)
+{
+	return t < 0 ? 0u : t > (int64_t)UINT32_MAX ? UINT32_MAX : (unsigned)t;
+}
+
+/*
+ * What a rejected document was checked against. The verdict line says a step
+ * failed and not which operands failed it, and for step 2 the explanations
+ * differ only in those: the document names an issuer this lock does not hold
+ * (its kid matches no issuer below), it names one that is held and the
+ * signature still fails, or its own certificate signed it (x5chain). The kid
+ * is the first 8 bytes of SHA-256("key-identifier" || issuer key), Aliro
+ * §7.2.1. First 8 bytes of each key, as for the anchors; only on a rejection.
+ * Not on a lean build: it parses neither the dates nor the x5chain, and the
+ * lines cost about 0.5 KiB of flash that the nRF52833 debug image does not have.
+ */
+static void learn_log_operands(const struct ultrawidelock_stepup_verdict *v, bool x5chain)
+{
+	const struct ultrawidelock_stepup_doc *d = &s_learn_doc;
+	uint8_t kid[8] = {0}, in[14 + ULTRAWIDELOCK_CRED_PUB_LEN], h[32];
+
+	(void)v; /* host log stub compiles the formatted arguments away */
+	(void)x5chain;
+	if (d->kid != NULL) {
+		memcpy(kid, d->kid, d->kid_len < sizeof(kid) ? d->kid_len : sizeof(kid));
+	}
+	LOG_WRN("  document: kid %02x%02x%02x%02x%02x%02x%02x%02x (%u B) x5chain=%d sigstruct=%u B "
+		"tvr=%d from=%u until=%u now=%u",
+		kid[0], kid[1], kid[2], kid[3], kid[4], kid[5], kid[6], kid[7],
+		(unsigned)d->kid_len, x5chain, (unsigned)v->sig_struct_len,
+		d->time_verification_required, log_epoch(d->valid_from_epoch),
+		log_epoch(d->valid_until_epoch), log_epoch(s_doc_time));
+	memcpy(in, "key-identifier", 14);
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	for (uint8_t i = 0u; i < s_trust.issuer_count && i < ULTRAWIDELOCK_ISSUER_MAX; i++) {
+		const uint8_t *k = s_trust.issuer_pub[i];
+
+		memcpy(in + 14, k, ULTRAWIDELOCK_CRED_PUB_LEN);
+		ultrawidelock_sha256(in, sizeof(in), h);
+		LOG_WRN("  issuer[%u]: %02x %02x %02x %02x %02x %02x %02x %02x kid "
+			"%02x%02x%02x%02x%02x%02x%02x%02x",
+			i, k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], h[0], h[1], h[2], h[3],
+			h[4], h[5], h[6], h[7]);
+	}
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+}
+#endif /* !ULTRAWIDELOCK_STEPUP_LEAN */
 
 /* Admit s->learn_pub as an evictable endpoint anchor vouched for by issuer_pub,
  * filed under the issuer's user and the lowest free credential index of its
@@ -1705,7 +1784,21 @@ static void learn_decide(struct ultrawidelock_session *s)
 	uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN];
 	struct ultrawidelock_stepup_verdict v;
 	const char *why = NULL;
-	int iss = learn_verify(s, issuer_pub, &why, &v);
+	bool x5chain = false;
+	int iss = learn_verify(s, issuer_pub, &why, &v, &x5chain);
+
+	if (iss < 0) {
+		LOG_WRN("[conn %u] Access Document verdict: step=%d issuer=%d sig=%d dig=%d type=%d "
+			"time=%d iter=%d el=%u drop=%u/%u tr=%x",
+			s->conn_handle, v.reject_step, v.issuer_key_found, v.sig_ok, v.digests_ok,
+			v.doctype_ok, v.time_ok, v.iteration_ok, (unsigned)v.valid_elements,
+			(unsigned)v.n_digests_dropped, (unsigned)v.n_items_dropped, v.truncated);
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
+		if (v.issuer_key_found) {
+			learn_log_operands(&v, x5chain);
+		}
+#endif
+	}
 
 	/* The document, decrypted in place over what was collected, and the
 	 * pointers into it are done with. */
@@ -1714,11 +1807,6 @@ static void learn_decide(struct ultrawidelock_session *s)
 	stepup_sd_release(s->conn_handle);
 
 	if (iss < 0) {
-		LOG_WRN("[conn %u] Access Document verdict: step=%d issuer=%d sig=%d dig=%d type=%d "
-			"time=%d iter=%d el=%u drop=%u/%u tr=%x",
-			s->conn_handle, v.reject_step, v.issuer_key_found, v.sig_ok, v.digests_ok,
-			v.doctype_ok, v.time_ok, v.iteration_ok, (unsigned)v.valid_elements,
-			(unsigned)v.n_digests_dropped, (unsigned)v.n_items_dropped, v.truncated);
 		learn_reject(s, why);
 		return;
 	}
@@ -1726,6 +1814,16 @@ static void learn_decide(struct ultrawidelock_session *s)
 		learn_reject(s, "learned key not persisted");
 		return;
 	}
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
+	/* Only a document that ended in a learned key moves the time: one that
+	 * vouched for another key, or whose key could not be stored, was refused,
+	 * and a refused document sets nothing. Forward only. */
+	if (v.ratchet_epoch > s_doc_time) {
+		s_doc_time = v.ratchet_epoch;
+		LOG_INF("[conn %u] document time moved to %u (validFrom of the learned document)",
+			s->conn_handle, log_epoch(s_doc_time));
+	}
+#endif
 	s->stepup_active = false;
 	s->learn_pending = false;
 	notify_access(true);

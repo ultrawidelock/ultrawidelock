@@ -903,9 +903,26 @@ static void ph_stepup_resp(struct ph *p, uint16_t conn, const uint8_t *devresp, 
 			return;
 		}
 	}
+	/* More than one frame holds goes out as a device sends it: ISO 7816 61XX
+	 * chaining, each piece answered by the reader's GET RESPONSE. */
+	size_t off = 0, got;
+
+	while (pn - off > 590) {
+		uint8_t part[592];
+
+		memcpy(part, pl + off, 590);
+		part[590] = 0x61;
+		part[591] = 0x00;
+		ph_send(conn, ULTRAWIDELOCK_PROTO_ACCESS, ULTRAWIDELOCK_AP_OP_RESPONSE, part, 592);
+		off += 590;
+		if (tx_next(&got) == NULL) {
+			return;
+		}
+	}
 	pl[pn] = sw1;
 	pl[pn + 1] = sw2;
-	ph_send(conn, ULTRAWIDELOCK_PROTO_ACCESS, ULTRAWIDELOCK_AP_OP_RESPONSE, pl, pn + 2);
+	ph_send(conn, ULTRAWIDELOCK_PROTO_ACCESS, ULTRAWIDELOCK_AP_OP_RESPONSE, pl + off,
+		pn - off + 2);
 }
 
 /* Mint an Access Document: an ISO 18013-5 DeviceResponse whose one "aliro-a"
@@ -914,11 +931,21 @@ static void ph_stepup_resp(struct ph *p, uint16_t conn, const uint8_t *devresp, 
  * unprotected header as label 4; x5_pub (may be NULL) as a label-33 stand-in
  * certificate holding that key's SPKI marker, which is what the verifier's
  * x5chain extractor looks for. */
+/* What the next build_access_document() mints differently from the default: a
+ * document that requires time verification (MSO "7"), its validity window, and
+ * how many further valueDigests ride along (an issuer lists a digest per element
+ * it signed, not per element disclosed, and each grows the MSO by 35 bytes). */
+static struct {
+	int tvr;
+	const char *from, *until;
+	unsigned pad_digests;
+} s_doc = {0, "2026-09-10T12:00:00Z", "4001-01-01T00:00:00Z", 0};
+
 static int build_access_document(const uint8_t device_pub[65], const uint8_t signer_priv[32],
 				 const uint8_t *kid, size_t kid_len, const uint8_t *x5_pub,
 				 uint8_t *out, size_t cap, size_t *out_len)
 {
-	uint8_t item[96], mso[320], payload[340], sigst[400], sig[64], digest[32];
+	uint8_t item[96], mso[768], payload[800], sigst[840], sig[64], digest[32];
 	struct cw w;
 	static const uint8_t rnd[16] = {0x52, 0x4e, 0x44, 0x00, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
 	static const uint8_t prot[3] = {0xa1, 0x01, 0x26}; /* {1: -7} = ES256 */
@@ -958,9 +985,16 @@ static int build_access_document(const uint8_t device_pub[65], const uint8_t sig
 	cw_tstr(&w, "3");
 	cw_map(&w, 1);
 	cw_tstr(&w, "aliro-a");
-	cw_map(&w, 1);
+	cw_map(&w, 1u + s_doc.pad_digests);
 	cw_type(&w, 0x00, 1);
 	cw_bstr(&w, digest, 32);
+	for (unsigned i = 0; i < s_doc.pad_digests; i++) {
+		uint8_t other[32];
+
+		memset(other, (int)(0xD0u + i), sizeof(other));
+		cw_type(&w, 0x00, 2u + i);
+		cw_bstr(&w, other, 32);
+	}
 	cw_tstr(&w, "4");
 	cw_map(&w, 1);
 	cw_tstr(&w, "1");
@@ -982,12 +1016,12 @@ static int build_access_document(const uint8_t device_pub[65], const uint8_t sig
 	cw_tstr(&w, "2026-09-10T12:00:00Z");
 	cw_tstr(&w, "2");
 	cw_tag(&w, 0);
-	cw_tstr(&w, "2026-09-10T12:00:00Z");
+	cw_tstr(&w, s_doc.from);
 	cw_tstr(&w, "3");
 	cw_tag(&w, 0);
-	cw_tstr(&w, "4001-01-01T00:00:00Z");
+	cw_tstr(&w, s_doc.until);
 	cw_tstr(&w, "7");
-	cw_bool(&w, 0);
+	cw_bool(&w, s_doc.tvr);
 	if (w.err) {
 		return -1;
 	}
@@ -1219,6 +1253,35 @@ static int ph_exchange_err(struct ph *p, uint16_t conn)
 }
 
 /* ---- the script ---------------------------------------------------------- */
+
+/* One learn-path walk-up: phone p presents its unknown key, is asked for its
+ * document, and answers with one minted under the current s_doc knobs that
+ * vouches for doc_pub. Returns 1 if the reader completed the AP (the key was
+ * learned), 0 if it dropped the link, -1 if the walk-up never got that far. */
+static int learn_walkup(struct ph *p, uint16_t conn, uint8_t eph_seed, const uint8_t doc_pub[65],
+			const uint8_t iss_priv[32], const uint8_t kid[8])
+{
+	uint8_t devreq[256], doc[1024];
+	size_t drn, dn;
+	int learned;
+
+	tx_reset();
+	s_cfg.cb.on_connected(conn);
+	ph_initiate(p, conn, 0);
+	if (ph_take_auth0(p) != 0) {
+		return -1;
+	}
+	ph_auth0_resp(p, conn, eph_seed);
+	if (ph_auth1_resp(p, conn, NULL, 0) != 0 || ph_exchange_resp(p, conn) != 0 ||
+	    ph_take_envelope(p, devreq, sizeof(devreq), &drn) != 0 ||
+	    build_access_document(doc_pub, iss_priv, kid, 8, NULL, doc, sizeof(doc), &dn) != 0) {
+		return -1;
+	}
+	ph_stepup_resp(p, conn, doc, dn, 0x90, 0x00);
+	learned = ph_take_ap_completed(p) == 0;
+	s_cfg.cb.on_disconnected(conn);
+	return learned;
+}
 
 int main(void)
 {
@@ -2774,6 +2837,159 @@ int main(void)
 		okc("g9.rejected_at_auth1", tx_pending() == 0 && s_disconnects == disconnects + 1);
 		okc("g9.nothing_learned", s_learned_calls == learned + 2);
 		s_cfg.cb.on_disconnected(78);
+
+		/* G10: a document that requires time verification, as a phone's
+		 * does. The reader has no clock of its own; the validFrom its issuer
+		 * signed is the time, and the key is learned. (It was rejected at
+		 * step 5 on every approach: field log received 2026-10-04.) */
+		{
+			struct ph t, w, x;
+
+			memset(&t, 0, sizeof(t));
+			memcpy(t.rvk, q.rvk, sizeof(t.rvk));
+			memset(t.cred_priv, 0xCA, sizeof(t.cred_priv));
+			ultrawidelock_ec_p256_pub_from_priv(t.cred_priv, t.cred_pub);
+			t.signaling = 0x0001u;
+			w = t;
+			memset(w.cred_priv, 0xCB, sizeof(w.cred_priv));
+			ultrawidelock_ec_p256_pub_from_priv(w.cred_priv, w.cred_pub);
+			x = t;
+			memset(x.cred_priv, 0xCC, sizeof(x.cred_priv));
+			ultrawidelock_ec_p256_pub_from_priv(x.cred_priv, x.cred_pub);
+
+			tx_reset();
+			learned = s_learned_calls;
+			s_cfg.cb.on_connected(79);
+			ph_initiate(&t, 79, 0);
+			okc("g10.auth0", ph_take_auth0(&t) == 0);
+			ph_auth0_resp(&t, 79, 0xF0);
+			okc("g10.auth1_resp", ph_auth1_resp(&t, 79, NULL, 0) == 0);
+			okc("g10.exchange", ph_exchange_resp(&t, 79) == 0);
+			okc("g10.envelope", ph_take_envelope(&t, devreq, sizeof(devreq), &drn) == 0);
+			s_doc.tvr = 1;
+			okc("g10.doc", build_access_document(t.cred_pub, iss_priv, kid, sizeof(kid), NULL,
+							     doc, sizeof(doc), &dn) == 0);
+			s_doc.tvr = 0;
+			ph_stepup_resp(&t, 79, doc, dn, 0x90, 0x00);
+			okc("g10.ap_completed", ph_take_ap_completed(&t) == 0);
+			okc("g10.learned", s_learned_calls == learned + 1 &&
+						   memcmp(s_learned_pub, t.cred_pub, 65) == 0);
+			s_cfg.cb.on_disconnected(79);
+
+			/* G11: an MSO with ten more valueDigests than the one disclosed
+			 * element. Its Sig_structure is over 512 bytes, which the
+			 * verifier used to build in a 512-byte buffer and so reported
+			 * as a bad signature. The signature decides, not the size. */
+			s_cfg.cb.on_connected(80);
+			ph_initiate(&w, 80, 0);
+			okc("g11.auth0", ph_take_auth0(&w) == 0);
+			ph_auth0_resp(&w, 80, 0xF1);
+			okc("g11.auth1_resp", ph_auth1_resp(&w, 80, NULL, 0) == 0);
+			okc("g11.exchange", ph_exchange_resp(&w, 80) == 0);
+			okc("g11.envelope", ph_take_envelope(&w, devreq, sizeof(devreq), &drn) == 0);
+			s_doc.pad_digests = 10;
+			okc("g11.doc", build_access_document(w.cred_pub, iss_priv, kid, sizeof(kid), NULL,
+							     doc, sizeof(doc), &dn) == 0 &&
+					       dn > 512u + 100u);
+			s_doc.pad_digests = 0;
+			ph_stepup_resp(&w, 80, doc, dn, 0x90, 0x00);
+			okc("g11.ap_completed", ph_take_ap_completed(&w) == 0);
+			okc("g11.learned", s_learned_calls == learned + 2 &&
+						   memcmp(s_learned_pub, w.cred_pub, 65) == 0);
+			s_cfg.cb.on_disconnected(80);
+
+			/* G12: the documents above carried validFrom 2026-09-10, and a
+			 * stored issuer signed them, so that is the time now. A document
+			 * whose window closed in 2021 is expired against it. */
+			tx_reset();
+			disconnects = s_disconnects;
+			stores = s_nvs_stores;
+			s_cfg.cb.on_connected(81);
+			ph_initiate(&x, 81, 0);
+			okc("g12.auth0", ph_take_auth0(&x) == 0);
+			ph_auth0_resp(&x, 81, 0xF2);
+			okc("g12.auth1_resp", ph_auth1_resp(&x, 81, NULL, 0) == 0);
+			okc("g12.exchange", ph_exchange_resp(&x, 81) == 0);
+			okc("g12.envelope", ph_take_envelope(&x, devreq, sizeof(devreq), &drn) == 0);
+			s_doc.tvr = 1;
+			s_doc.from = "2020-01-01T00:00:00Z";
+			s_doc.until = "2021-01-01T00:00:00Z";
+			okc("g12.doc", build_access_document(x.cred_pub, iss_priv, kid, sizeof(kid), NULL,
+							     doc, sizeof(doc), &dn) == 0);
+			s_doc.tvr = 0;
+			s_doc.from = "2026-09-10T12:00:00Z";
+			s_doc.until = "4001-01-01T00:00:00Z";
+			ph_stepup_resp(&x, 81, doc, dn, 0x90, 0x00);
+			okc("g12.rejected", tx_pending() == 0 && s_disconnects == disconnects + 1);
+			okc("g12.nothing_learned",
+			    s_learned_calls == learned + 2 && s_nvs_stores == stores);
+			s_cfg.cb.on_disconnected(81);
+		}
+
+		/* What may move the time, and what may not. It stands at 2026-09-10
+		 * from the documents above. */
+		{
+			struct ph a, b, c, d, e;
+			struct ph *all[] = {&a, &b, &c, &d, &e};
+
+			for (unsigned i = 0; i < 5; i++) {
+				memset(all[i], 0, sizeof(*all[i]));
+				memcpy(all[i]->rvk, q.rvk, sizeof(q.rvk));
+				memset(all[i]->cred_priv, (int)(0xD1u + i), sizeof(all[i]->cred_priv));
+				ultrawidelock_ec_p256_pub_from_priv(all[i]->cred_priv, all[i]->cred_pub);
+				all[i]->signaling = 0x0001u;
+			}
+
+			/* G13: a document dated 2030 that vouches for another key is
+			 * refused, and a refused document sets nothing: one whose
+			 * window closes in 2027 is still learned afterwards. */
+			s_doc.tvr = 1;
+			s_doc.from = "2030-01-01T00:00:00Z";
+			s_doc.until = "2031-01-01T00:00:00Z";
+			okc("g13.other_key_refused",
+			    learn_walkup(&a, 82, 0xF3, q.cred_pub, iss_priv, kid) == 0);
+			s_doc.from = "2026-09-10T12:00:00Z";
+			s_doc.until = "2027-01-01T00:00:00Z";
+			okc("g13.time_not_moved", learn_walkup(&a, 83, 0xF4, a.cred_pub, iss_priv, kid) == 1);
+
+			/* G14: nor does one whose key could not be stored. */
+			s_doc.from = "2030-01-01T00:00:00Z";
+			s_doc.until = "2031-01-01T00:00:00Z";
+			s_nvs_fail = true;
+			okc("g14.unstored_refused",
+			    learn_walkup(&b, 84, 0xF5, b.cred_pub, iss_priv, kid) == 0);
+			s_nvs_fail = false;
+			s_doc.from = "2026-09-10T12:00:00Z";
+			s_doc.until = "2027-01-01T00:00:00Z";
+			okc("g14.time_not_moved", learn_walkup(&b, 85, 0xF6, b.cred_pub, iss_priv, kid) == 1);
+
+			/* G15: an older validFrom is accepted and never moves the time
+			 * back (or to nothing): a window that closed in January 2026 is
+			 * still expired after it. */
+			s_doc.from = "2025-01-01T00:00:00Z";
+			s_doc.until = "4001-01-01T00:00:00Z";
+			okc("g15.older_from_learned",
+			    learn_walkup(&c, 86, 0xF7, c.cred_pub, iss_priv, kid) == 1);
+			s_doc.until = "2026-01-01T00:00:00Z";
+			okc("g15.time_not_moved_back",
+			    learn_walkup(&d, 87, 0xF8, d.cred_pub, iss_priv, kid) == 0);
+
+			/* G16: with a second issuer stored after the signer, a document
+			 * the first issuer signed and step 5 refuses stays refused, and
+			 * the loop stops at its signer (the verdict logged is step 5,
+			 * not the second issuer's bad signature). */
+			okc("g16.add_second_issuer",
+			    ultrawidelock_reader_provision_add_issuer(rogue_pub, 2u, 3u) == 0);
+			okc("g16.expired_refused",
+			    learn_walkup(&e, 88, 0xF9, e.cred_pub, iss_priv, kid) == 0);
+			s_doc.from = "2026-09-10T12:00:00Z";
+			s_doc.until = "4001-01-01T00:00:00Z";
+			okc("g16.signed_by_first_of_two",
+			    learn_walkup(&e, 89, 0xFA, e.cred_pub, iss_priv, kid) == 1);
+			okc("g16.remove_second_issuer",
+			    ultrawidelock_reader_provision_remove_issuer(2u) == 0);
+			s_doc.tvr = 0;
+		}
 
 		/* G8: revoking the issuer revokes both keys it vouched for. Without
 		 * an issuer the verdict is the old one: rejected at AUTH1, no

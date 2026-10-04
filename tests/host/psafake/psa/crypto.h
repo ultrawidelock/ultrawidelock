@@ -26,6 +26,7 @@ typedef uint32_t psa_key_usage_t;
 #define PSA_KEY_USAGE_SIGN_MESSAGE   ((psa_key_usage_t)0x00000400u)
 #define PSA_KEY_USAGE_VERIFY_MESSAGE ((psa_key_usage_t)0x00000800u)
 #define PSA_KEY_USAGE_SIGN_HASH      ((psa_key_usage_t)0x00001000u)
+#define PSA_KEY_USAGE_VERIFY_HASH    ((psa_key_usage_t)0x00002000u)
 #define PSA_KEY_USAGE_DERIVE         ((psa_key_usage_t)0x00004000u)
 #define PSA_KEY_USAGE_EXPORT         ((psa_key_usage_t)0x00000001u)
 
@@ -147,5 +148,8 @@ psa_status_t psa_sign_hash(psa_key_id_t key, psa_algorithm_t alg, const uint8_t 
 psa_status_t psa_verify_message(psa_key_id_t key, psa_algorithm_t alg, const uint8_t *input,
 				size_t input_length, const uint8_t *signature,
 				size_t signature_length);
+psa_status_t psa_verify_hash(psa_key_id_t key, psa_algorithm_t alg, const uint8_t *hash,
+			     size_t hash_length, const uint8_t *signature,
+			     size_t signature_length);
 
 #endif /* PSAFAKE_PSA_CRYPTO_H */
