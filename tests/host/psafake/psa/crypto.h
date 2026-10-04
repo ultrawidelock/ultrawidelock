@@ -148,6 +148,8 @@ psa_status_t psa_sign_hash(psa_key_id_t key, psa_algorithm_t alg, const uint8_t 
 psa_status_t psa_verify_message(psa_key_id_t key, psa_algorithm_t alg, const uint8_t *input,
 				size_t input_length, const uint8_t *signature,
 				size_t signature_length);
+psa_status_t psa_hash_compute(psa_algorithm_t alg, const uint8_t *input, size_t input_length,
+			      uint8_t *hash, size_t hash_size, size_t *hash_length);
 psa_status_t psa_verify_hash(psa_key_id_t key, psa_algorithm_t alg, const uint8_t *hash,
 			     size_t hash_length, const uint8_t *signature,
 			     size_t signature_length);

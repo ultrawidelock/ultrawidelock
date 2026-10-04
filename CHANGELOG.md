@@ -99,7 +99,12 @@ fault was step 5 also read `step=2 sig=0` unless its signer was stored last.
   document it accepted could be one that never verified. The structure is now
   hashed in pieces and the digest verified
   (`ultrawidelock_ecdsa_p256_verify_hash`): the signature check has no size
-  limit and uses 512 bytes less stack. The field log did not record the
+  limit and uses 512 bytes less stack. Every other signature check in the
+  firmware (the update header, AUTH1, Matter) now takes the same path: the
+  message verify hashes through PSA and verifies the digest. With
+  `psa_verify_message` kept beside `psa_verify_hash` the nRF52833 images
+  grew by about 230 bytes, and the anchorlink image, which had 24 bytes to
+  spare, no longer signed. The field log did not record the
   document's size, so whether this is what failed the Watch's signature is
   not confirmed yet.
 - **A document with no IssuerAuth handed the signature check a null
@@ -127,7 +132,7 @@ fault was step 5 also read `step=2 sig=0` unless its signer was stored last.
   refused.** Its lean parser drops the validity dates to fit the flash, so
   the ratchet has nothing to read and is not built there, and neither are
   the operand lines: with them the debug image overflowed its slot by 12
-  bytes, without them it has 944 bytes left (432,720 of 433,664). The
+  bytes, without them it has 1,184 bytes left (432,480 of 433,664). The
   signature fixes apply to both boards.
 
 ### The Watch gets in without `trust`
