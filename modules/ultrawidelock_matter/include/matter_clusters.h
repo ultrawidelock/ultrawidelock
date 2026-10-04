@@ -358,11 +358,11 @@ struct matter_user {
 #define TAG_GETUSER_NEXT_INDEX      9u
 
 /**
- * How many user slots this lock reports.
+ * How many user slots this lock holds and reports.
  *
- * Reported, not stored: this node holds no user database yet. The count has to
- * be non-zero because a lock claiming the User feature with room for nobody is
- * not a coherent answer.
+ * The table is stored whole (MATTER_FABRIC_STORE_USERS), so this count is part
+ * of a stored record's size: a port that discards a record of another size
+ * drops every user on the first boot after the count changes.
  */
 #define MATTER_DL_USERS_MAX          10u
 #define MATTER_DL_CREDS_PER_USER_MAX 5u
@@ -838,6 +838,15 @@ enum matter_fabric_store_operation {
 	 * rewriting them would spend flash on bytes that did not move.
 	 */
 	MATTER_FABRIC_STORE_UPDATE = 5,
+	/*
+	 * The Door Lock user table, node-wide like the binding table: every
+	 * fabric reads the same rows. The slot argument is unused.
+	 *
+	 * Stored because a controller reads its user back after a reset. One
+	 * that is answered with an empty slot where it had written a user
+	 * treats the lock as no longer its own and sends RemoveFabric.
+	 */
+	MATTER_FABRIC_STORE_USERS = 6,
 };
 
 struct matter_device_info;
@@ -997,6 +1006,10 @@ struct matter_device_info {
 	 * different things. The user NAME is deliberately not stored -- it is
 	 * nullable, nothing here displays it, and it is the only field that
 	 * would cost real RAM.
+	 *
+	 * The same contradiction is waiting after a reset, so the port stores
+	 * the table (MATTER_FABRIC_STORE_USERS) before SetUser or ClearUser is
+	 * acknowledged and restores it with the fabrics.
 	 */
 	struct matter_user users[MATTER_DL_USERS_MAX];
 	/**

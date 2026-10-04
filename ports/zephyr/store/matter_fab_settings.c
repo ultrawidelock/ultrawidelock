@@ -25,6 +25,7 @@ enum record_kind {
 #if MATTER_FEATURE_CLIENT
 	REC_BINDING = 6,
 #endif
+	REC_USERS = 7,
 };
 
 struct record_header {
@@ -78,6 +79,11 @@ struct binding_record {
 };
 #endif
 
+struct users_record {
+	struct record_header h;
+	struct matter_user users[MATTER_DL_USERS_MAX];
+};
+
 union record_io {
 	struct meta_record meta;
 	struct network_record network;
@@ -87,6 +93,7 @@ union record_io {
 #if MATTER_FEATURE_CLIENT
 	struct binding_record binding;
 #endif
+	struct users_record users;
 };
 
 /* One bounded static codec buffer. Earlier tree-shaped settings writes
@@ -118,6 +125,11 @@ _Static_assert(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + MATTER_SUPPORTED_FABRICS <
 	       "Matter ACL slots have outgrown their key window");
 _Static_assert(sizeof(union record_io) <= ULTRAWIDELOCK_KV_VALUE_MAX,
 	       "Matter record exceeds the key-value seam's value ceiling");
+/* record_read() discards a record of any other size, and an image that boots
+ * with an empty user table is one its controller removes. Changing this number
+ * means migrating the stored record, not just accepting the new size. */
+_Static_assert(sizeof(struct users_record) == 136u,
+	       "the stored user table changed shape; an update would drop every user");
 #if MATTER_FEATURE_CLIENT
 _Static_assert(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_BINDING <
 		       ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0,
@@ -154,6 +166,24 @@ static void record_seal(void *record, size_t len)
 
 	h->crc = 0u;
 	h->crc = crc32(record, len);
+}
+
+/*
+ * Every record is assembled at the front of the one codec buffer, so the two
+ * steps each store shares are functions of that buffer rather than of a
+ * pointer into it. Inlined into every store they cost more flash than the
+ * records themselves, in an image that has none to spare.
+ */
+static void record_begin(uint8_t kind, uint8_t state, uint8_t slot)
+{
+	memset(&s_io, 0, sizeof(s_io));
+	record_init(&s_io.meta.h, kind, state, slot);
+}
+
+static int record_put(uint16_t key, size_t len)
+{
+	record_seal(&s_io, len);
+	return ultrawidelock_kv_set(key, &s_io, len);
 }
 
 static bool record_valid(void *record, size_t len, uint8_t kind)
@@ -274,6 +304,23 @@ static int load_binding(struct matter_device_info *info)
 }
 #endif
 
+/* Taken only from the live epoch. clear_identity() empties the table again on
+ * every path that ends with no fabric, so a user row never outlives the last
+ * administrator who could have written it. */
+static int load_users(struct matter_device_info *info)
+{
+	int rc = record_read(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_USERS, sizeof(s_io.users));
+
+	if (rc != 0) {
+		return rc < 0 ? rc : 0;
+	}
+	if (record_valid(&s_io.users, sizeof(s_io.users), REC_USERS) &&
+	    s_io.users.h.epoch == s_epoch && s_io.users.h.state == REC_LIVE) {
+		memcpy(info->users, s_io.users.users, sizeof(info->users));
+	}
+	return 0;
+}
+
 static int load_fabric(struct matter_device_info *info, uint8_t slot)
 {
 	int rc = record_read(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + slot,
@@ -323,11 +370,8 @@ static int ensure_meta(void)
 	if (s_have_meta) {
 		return 0;
 	}
-	memset(&s_io, 0, sizeof(s_io));
-	record_init(&s_io.meta.h, REC_META, REC_LIVE, 0xffu);
-	record_seal(&s_io.meta, sizeof(s_io.meta));
-	rc = ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_META,
-				  &s_io.meta, sizeof(s_io.meta));
+	record_begin(REC_META, REC_LIVE, 0xffu);
+	rc = record_put(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_META, sizeof(s_io.meta));
 	if (rc == 0) {
 		s_have_meta = true;
 	}
@@ -348,14 +392,11 @@ static int store_network(const struct matter_device_info *info)
 	if (len == 0u || len > MATTER_THREAD_DATASET_MAX) {
 		return -EINVAL;
 	}
-	memset(&s_io, 0, sizeof(s_io));
-	record_init(&s_io.network.h, REC_NETWORK, REC_LIVE, 0xffu);
+	record_begin(REC_NETWORK, REC_LIVE, 0xffu);
 	s_io.network.dataset_len = (uint16_t)len;
 	memcpy(s_io.network.xpanid, xpanid, MATTER_THREAD_XPANID_LEN);
 	memcpy(s_io.network.dataset, dataset, len);
-	record_seal(&s_io.network, sizeof(s_io.network));
-	return ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_NET,
-				   &s_io.network, sizeof(s_io.network));
+	return record_put(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_NET, sizeof(s_io.network));
 }
 
 static int store_acl(const struct matter_device_info *info, uint8_t slot,
@@ -366,8 +407,7 @@ static int store_acl(const struct matter_device_info *info, uint8_t slot,
 	if (value_len > MATTER_ACL_MAX || (value_len != 0u && value == NULL)) {
 		return -EINVAL;
 	}
-	memset(&s_io, 0, sizeof(s_io));
-	record_init(&s_io.acl.h, REC_ACL, REC_LIVE, slot);
+	record_begin(REC_ACL, REC_LIVE, slot);
 	s_io.acl.fabric_id = f->fabric_id;
 	s_io.acl.node_id = f->node_id;
 	s_io.acl.fabric_index = f->index;
@@ -375,9 +415,7 @@ static int store_acl(const struct matter_device_info *info, uint8_t slot,
 	if (value_len != 0u) {
 		memcpy(s_io.acl.data, value, value_len);
 	}
-	record_seal(&s_io.acl, sizeof(s_io.acl));
-	return ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + slot,
-				   &s_io.acl, sizeof(s_io.acl));
+	return record_put(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ACL0 + slot, sizeof(s_io.acl));
 }
 
 static int store_icac(const struct matter_device_info *info)
@@ -390,16 +428,13 @@ static int store_icac(const struct matter_device_info *info)
 	if (info->icac.len == 0u || info->icac.owner_index == 0u) {
 		state = REC_DELETED;
 	}
-	memset(&s_io, 0, sizeof(s_io));
-	record_init(&s_io.icac.h, REC_ICAC, state, 0xffu);
+	record_begin(REC_ICAC, state, 0xffu);
 	s_io.icac.len = (uint16_t)info->icac.len;
 	s_io.icac.owner_index = info->icac.owner_index;
 	if (state == REC_LIVE) {
 		memcpy(s_io.icac.data, info->icac.buf, info->icac.len);
 	}
-	record_seal(&s_io.icac, sizeof(s_io.icac));
-	return ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ICAC,
-				   &s_io.icac, sizeof(s_io.icac));
+	return record_put(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_ICAC, sizeof(s_io.icac));
 }
 
 #if MATTER_FEATURE_CLIENT
@@ -411,14 +446,23 @@ static int store_icac(const struct matter_device_info *info)
  */
 static int store_binding(const struct matter_device_info *info)
 {
-	memset(&s_io, 0, sizeof(s_io));
-	record_init(&s_io.binding.h, REC_BINDING, REC_LIVE, 0xffu);
+	record_begin(REC_BINDING, REC_LIVE, 0xffu);
 	s_io.binding.table = info->binding;
-	record_seal(&s_io.binding, sizeof(s_io.binding));
-	return ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_BINDING,
-				   &s_io.binding, sizeof(s_io.binding));
+	return record_put(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_BINDING, sizeof(s_io.binding));
 }
 #endif
+
+/*
+ * Written whole, like the binding table, and for the same reason: an emptied
+ * table is something a controller chose, and skipping it would bring the old
+ * rows back at the next boot.
+ */
+static int store_users(const struct matter_device_info *info)
+{
+	record_begin(REC_USERS, REC_LIVE, 0xffu);
+	memcpy(s_io.users.users, info->users, sizeof(s_io.users.users));
+	return record_put(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_USERS, sizeof(s_io.users));
+}
 
 int matter_fab_commit(const struct matter_device_info *info,
 		      enum matter_fabric_store_operation operation, uint8_t slot,
@@ -446,12 +490,22 @@ int matter_fab_commit(const struct matter_device_info *info,
 	if (rc != 0) {
 		return rc;
 	}
+	if (operation == MATTER_FABRIC_STORE_USERS) {
+		return store_users(info);
+	}
 	if (operation == MATTER_FABRIC_STORE_ACL) {
 		return store_acl(info, slot, value, value_len);
 	}
 	if (operation == MATTER_FABRIC_STORE_COMMIT_ATTEMPT) {
 		if (info->committed_slots == 0u) {
 			rc = store_network(info);
+			if (rc != 0) {
+				return rc;
+			}
+			/* The first administrator of an empty table. Whatever
+			 * user record an earlier home left behind is replaced
+			 * here, before anything could load it. */
+			rc = store_users(info);
 			if (rc != 0) {
 				return rc;
 			}
@@ -466,18 +520,15 @@ int matter_fab_commit(const struct matter_device_info *info,
 			return rc;
 		}
 	}
-	memset(&s_io, 0, sizeof(s_io));
-	record_init(&s_io.fabric.h, REC_FABRIC,
-		    operation == MATTER_FABRIC_STORE_REMOVE ? REC_DELETED : REC_LIVE, slot);
+	record_begin(REC_FABRIC, operation == MATTER_FABRIC_STORE_REMOVE ? REC_DELETED : REC_LIVE,
+		     slot);
 	if (operation == MATTER_FABRIC_STORE_COMMIT_ATTEMPT ||
 	    operation == MATTER_FABRIC_STORE_UPDATE) {
 		s_io.fabric.fabric = info->fabrics[slot];
 	} else if (operation != MATTER_FABRIC_STORE_REMOVE) {
 		return -EINVAL;
 	}
-	record_seal(&s_io.fabric, sizeof(s_io.fabric));
-	return ultrawidelock_kv_set(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + slot,
-				   &s_io.fabric, sizeof(s_io.fabric));
+	return record_put(ULTRAWIDELOCK_KV_KEY_MATTER_MF2_FAB0 + slot, sizeof(s_io.fabric));
 }
 
 static void clear_identity(struct matter_device_info *info)
@@ -488,6 +539,7 @@ static void clear_identity(struct matter_device_info *info)
 #if MATTER_FEATURE_CLIENT
 	memset(&info->binding, 0, sizeof(info->binding));
 #endif
+	memset(info->users, 0, sizeof(info->users));
 	info->committed_slots = 0u;
 	info->thread_dataset_len = 0u;
 	info->have_thread_xpanid = false;
@@ -552,6 +604,9 @@ int matter_fab_load(struct matter_device_info *info)
 	rc = load_network(info);
 	if (rc == 0) {
 		rc = load_icac(info);
+	}
+	if (rc == 0) {
+		rc = load_users(info);
 	}
 #if MATTER_FEATURE_CLIENT
 	if (rc == 0) {

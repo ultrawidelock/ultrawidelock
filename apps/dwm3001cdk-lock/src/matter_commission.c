@@ -176,6 +176,12 @@ static uint8_t command_status_logged(void *ctx, const struct matter_im_invoke *i
 		LOG_WRN("  -> refused, status 0x%02x (node %08x%08x)", st,
 			(unsigned int)(s_info.accessing_node_id >> 32),
 			(unsigned int)s_info.accessing_node_id);
+	} else if (*response_command == MATTER_CMD_DL_GET_USER_RESPONSE) {
+		/* The answer a RemoveFabric has followed: in use 0, an empty
+		 * slot, where the controller had written a user. No other
+		 * cluster here answers with this command id. */
+		LOG_INF("  -> user %u in use %u", s_info.last_user_index,
+			s_info.users[s_info.last_user_index - 1u].in_use);
 	}
 	return st;
 }
@@ -1696,6 +1702,12 @@ static void on_invoke_request(const struct matter_exchange_in *in)
 	removed = inv.cluster == MATTER_CLUSTER_OPERATIONAL_CREDENTIALS &&
 		  inv.command == MATTER_CMD_OC_REMOVE_FABRIC &&
 		  s_info.last_noc_status == MATTER_NOC_STATUS_OK && s_info.last_noc_index != 0u;
+	if (removed) {
+		/* Whose fabric went and who asked: what tells a controller
+		 * abandoning this node from one tidying up after another. */
+		LOG_WRN("  -> fabric %u removed by fabric %u", s_info.last_noc_index,
+			s_info.accessing_fabric_index);
+	}
 	/*
 	 * ONLY at CommissioningComplete, never at AddNOC.
 	 *
@@ -4659,18 +4671,6 @@ int matter_commission_init(void)
 			s_info.have_ultrawidelock_group_resolving_key = true;
 			s_info.have_ultrawidelock_reader_config = true;
 			LOG_DBG("credential reader configuration restored; attributes readable");
-		for (size_t i = 0u; i < MATTER_SUPPORTED_FABRICS; i++) {
-			if (s_info.fabric_acls[i].len == 0u) {
-				continue;
-			}
-			LOG_INF("  fabric %u ACL %u B, case admin subject %08x%08x",
-				(unsigned int)s_info.fabrics[i].index,
-				(unsigned int)s_info.fabric_acls[i].len,
-				(unsigned int)(s_info.fabrics[i].case_admin_subject >> 32),
-				(unsigned int)s_info.fabrics[i].case_admin_subject);
-			LOG_HEXDUMP_INF(s_info.fabric_acls[i].data, s_info.fabric_acls[i].len,
-					"  ACL bytes:");
-		}
 		} else if (rc != -ENOENT) {
 			/* -ENOENT is the dev identity and is not news. Anything
 			 * else means a stored identity exists and could not be

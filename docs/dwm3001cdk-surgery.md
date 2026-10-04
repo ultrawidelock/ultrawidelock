@@ -267,6 +267,35 @@ for one administrator and SW2 only for an unreachable last-resort reset.
 "erased" unconditionally made a wipe that removed **nothing** indistinguishable from one
 that worked: a board kept coming back with the same fabrics. Report each key's `rc`.
 
+### 4.6 What a controller wrote, it reads back after a reset
+
+**MEASURED 2026-10-04; the fix is host-tested and not yet proven on the bench.** The Door
+Lock user table was the one piece of controller-written state held only in RAM. 35 s after
+a reflash the hub opened a new CASE session and its first request was `GetUser`. No
+`-> refused` line followed, so the answer was a success carrying an empty slot, where the
+hub had written a user at setup. About 130 ms later it sent `RemoveFabric` for its own
+fabric.
+
+The second half is what made it expensive. The hub removes only its own fabric, the
+phone's stays, and a node that holds any fabric does not advertise as commissionable
+(5.1). The lock was left paired to nothing useful and invisible to pairing, and every
+occurrence ended in `make flash-erase`.
+
+The table is now a record of its own (`REC_USERS`) in the store of 4.2. `SetUser` and
+`ClearUser` cross the durability boundary of section 2 before they answer, and a store
+that fails turns the command into a FAILURE with the row put back. The first commit into
+an empty fabric table rewrites the record, so a new home never loads the last one's users.
+
+**Rule: a reset may cost sessions and subscriptions (9.1) and nothing else. Any command or
+write a controller is told succeeded must read back the same after it.** The audit behind
+that rule found everything else already stored: fabrics, ACLs, labels, bindings,
+`AutoRelockTime`, the approach bitmap, the UWB policy, the reader identity and its
+credentials.
+
+The record's size is pinned by a `_Static_assert`. `record_read()` drops a record of any
+other size (4.2), and dropping this one reproduces the failure above on the first boot of
+the new image.
+
 ---
 
 ## 5. Advertising: one payload, one gate, and three ways to lose it

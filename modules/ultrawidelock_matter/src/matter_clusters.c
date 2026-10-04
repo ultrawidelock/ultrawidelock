@@ -519,6 +519,12 @@ static int fabric_store(struct matter_device_info *info,
 		value_len);
 }
 
+/* The user table is node-wide: there is no slot and no value to name. */
+static int users_store(struct matter_device_info *info)
+{
+	return fabric_store(info, MATTER_FABRIC_STORE_USERS, 0u, NULL, 0u);
+}
+
 static void fabric_slot_clear(struct matter_device_info *info, size_t slot)
 {
 	struct matter_fabric *f;
@@ -3274,6 +3280,7 @@ static uint8_t clear_credential(struct matter_device_info *info, const struct ma
 static uint8_t clear_user(struct matter_device_info *info, const struct matter_im_invoke *inv)
 {
 	uint64_t idx = 0u;
+	int users_rc;
 
 	if (!field_u64(inv, TAG_CLEARUSER_INDEX, &idx) || idx == 0u ||
 	    (idx > MATTER_DL_USERS_MAX && idx != MATTER_DL_INDEX_ALL)) {
@@ -3287,8 +3294,12 @@ static uint8_t clear_user(struct matter_device_info *info, const struct matter_i
 	} else {
 		memset(&info->users[idx - 1u], 0, sizeof(info->users[0]));
 	}
-	return info->ultrawidelock_user_clear_cb((uint16_t)idx) == 0 ? MATTER_IM_STATUS_SUCCESS
-							     : MATTER_IM_STATUS_FAILURE;
+	/* Both halves are attempted whatever the other returns: a row that
+	 * could not be stored as cleared must still lose its credentials. */
+	users_rc = users_store(info);
+	return info->ultrawidelock_user_clear_cb((uint16_t)idx) == 0 && users_rc == MATTER_OK
+		       ? MATTER_IM_STATUS_SUCCESS
+		       : MATTER_IM_STATUS_FAILURE;
 }
 
 /**
@@ -3410,6 +3421,7 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 			 * for a table that holds no credentials of its own yet.
 			 */
 			struct matter_user *u;
+			struct matter_user prev;
 			uint64_t idx = 0u;
 
 			if (!field_u64(inv, TAG_SETUSER_INDEX, &idx) || idx == 0u ||
@@ -3417,6 +3429,7 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 				return MATTER_IM_STATUS_INVALID_COMMAND;
 			}
 			u = &info->users[idx - 1u];
+			prev = *u;
 			u->in_use = true;
 			u->creator_fabric = info->accessing_fabric_index;
 			u->modifier_fabric = info->accessing_fabric_index;
@@ -3425,6 +3438,16 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 			u->type = field_u64(inv, TAG_SETUSER_TYPE, &v) ? (uint8_t)v : 0u;
 			u->credential_rule =
 				field_u64(inv, TAG_SETUSER_CREDENTIAL_RULE, &v) ? (uint8_t)v : 0u;
+			/*
+			 * Stored before SUCCESS, not after. The same controller
+			 * reads this row again after every reset of this node,
+			 * and an empty slot there is the contradiction above
+			 * arriving late: it answered one with RemoveFabric.
+			 */
+			if (users_store(info) != MATTER_OK) {
+				*u = prev;
+				return MATTER_IM_STATUS_FAILURE;
+			}
 			/* No response command: SetUser is answered with a bare
 			 * status, which the IM layer sends for SUCCESS. */
 			return MATTER_IM_STATUS_SUCCESS;

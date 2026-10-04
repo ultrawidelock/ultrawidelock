@@ -93,8 +93,35 @@ static int clear_user_cb(uint16_t user_index)
 
 /* ---- fixtures ------------------------------------------------------------ */
 
+/* The port's durable store, as the cluster sees it: what was asked for, and a
+ * verdict the test chooses. */
+static int s_store_calls;
+static int s_store_result;
+static enum matter_fabric_store_operation s_store_operation;
+
+static int store_cb(void *ctx, const struct matter_device_info *info,
+		    enum matter_fabric_store_operation operation, uint8_t slot,
+		    const uint8_t *value, size_t value_len)
+{
+	(void)ctx;
+	(void)info;
+	(void)slot;
+	(void)value;
+	(void)value_len;
+	s_store_calls++;
+	s_store_operation = operation;
+	return s_store_result;
+}
+
+static const struct matter_commissioning_hooks k_store_hooks = {
+	.fabric_store = store_cb,
+};
+
 static void reset_doubles(void)
 {
+	s_store_calls = 0;
+	s_store_result = MATTER_OK;
+	s_store_operation = (enum matter_fabric_store_operation)0;
 	s_cfg_calls = 0;
 	s_cfg_result = 0;
 	s_cred_calls = 0;
@@ -1759,6 +1786,84 @@ void test_matter_clusters(void)
 		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_USER, NULL, 0u,
 				 NULL),
 		     MATTER_IM_STATUS_INVALID_COMMAND);
+	}
+
+	/*
+	 * Found on hardware: the table lived only in RAM. After a reset Apple
+	 * Home asked GetUser for the user it had written, was answered with an
+	 * empty slot, and sent RemoveFabric one round trip later. A row is
+	 * therefore on stable storage before its command is acknowledged, and a
+	 * row that could not be stored is not acknowledged at all.
+	 */
+	t_group("the user table is stored before a user command is acknowledged");
+	{
+		struct matter_tlv_writer w;
+
+		reset_doubles();
+		fill_info(&info);
+		info.commissioning_hooks = &k_store_hooks;
+		matter_clusters_init(&srv, &info);
+
+		matter_tlv_writer_init(&w, fields, sizeof(fields));
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_SETUSER_INDEX), 3u);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_SETUSER_UNIQUE_ID), 0x1234u);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_writer_finish(&w, &flen);
+
+		T_EQ("SetUser succeeds when the store does",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_USER, fields,
+				 flen, NULL),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and asked the port exactly once", s_store_calls, 1);
+		T_EQ("for the user table", s_store_operation, MATTER_FABRIC_STORE_USERS);
+
+		/* The same row again, with a different id, into a store that fails. */
+		matter_tlv_writer_init(&w, fields, sizeof(fields));
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_SETUSER_INDEX), 3u);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_SETUSER_UNIQUE_ID), 0x9999u);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_writer_finish(&w, &flen);
+		s_store_result = MATTER_E_STATE;
+		T_EQ("a SetUser that could not be stored is a FAILURE",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_USER, fields,
+				 flen, NULL),
+		     MATTER_IM_STATUS_FAILURE);
+		T_OK("and leaves the row it could not replace",
+		     info.users[2].in_use && info.users[2].unique_id == 0x1234u);
+
+		/* A new row into a failing store must not appear either. */
+		matter_tlv_writer_init(&w, fields, sizeof(fields));
+		(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+		(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_SETUSER_INDEX), 4u);
+		(void)matter_tlv_end_container(&w);
+		(void)matter_tlv_writer_finish(&w, &flen);
+		T_EQ("a new user that could not be stored is a FAILURE",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_USER, fields,
+				 flen, NULL),
+		     MATTER_IM_STATUS_FAILURE);
+		T_OK("and its slot stays empty", !info.users[3].in_use);
+
+		s_store_calls = 0;
+		s_store_result = MATTER_OK;
+		flen = build_clear_user_fields(fields, sizeof(fields), true, 3u);
+		T_EQ("ClearUser succeeds when the store does",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_CLEAR_USER, fields,
+				 flen, NULL),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and stored the emptied table", s_store_calls, 1);
+		T_EQ("as the user table", s_store_operation, MATTER_FABRIC_STORE_USERS);
+
+		info.users[2].in_use = true;
+		s_clear_user_calls = 0;
+		s_store_result = MATTER_E_STATE;
+		T_EQ("a ClearUser that could not be stored is a FAILURE",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_CLEAR_USER, fields,
+				 flen, NULL),
+		     MATTER_IM_STATUS_FAILURE);
+		T_EQ("but the credentials were still revoked", s_clear_user_calls, 1);
+		T_OK("and the row is gone from RAM", !info.users[2].in_use);
 	}
 
 	/*
