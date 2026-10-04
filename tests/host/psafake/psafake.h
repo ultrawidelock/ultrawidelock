@@ -34,6 +34,7 @@ struct psafake_state {
 	int32_t raw_ka_ret;
 	int32_t sign_ret;
 	int32_t verify_ret;
+	int32_t hash_ret;
 	/* knobs: output-length overrides (-1 = natural length) */
 	long cipher_olen;
 	long aead_enc_olen;
@@ -46,6 +47,7 @@ struct psafake_state {
 	long export_pub_olen;
 	long raw_ka_olen;
 	long sign_olen;
+	long hash_olen;
 
 	/* recorded: last key attributes at import/generate */
 	uint32_t attr_usage;
@@ -76,7 +78,11 @@ struct psafake_state {
 	 * recorded (message, signature) pair and refuses anything else. That
 	 * refusal is the check: it proves the caller handed PSA exactly the
 	 * bytes a real ECDSA-P256 signed, so a tampered header is rejected for
-	 * a real reason rather than because a knob said so. */
+	 * a real reason rather than because a knob said so.
+	 *
+	 * psa_verify_hash() holds a caller that hashes first to the same pair:
+	 * the message it last gave psa_hash_compute() must be the recorded one,
+	 * and the digest it hands over must be the one that call returned. */
 	int verify_replay;
 	uint8_t replay_msg[64];
 	size_t replay_msg_len;
@@ -102,6 +108,13 @@ struct psafake_state {
 	uint32_t last_alg;       /* alg argument of the last operation call */
 	size_t last_nonce_len, last_aad_len, last_in_len, last_random_len;
 	size_t last_msg_len, last_sig_len;
+	/* psa_hash_compute(): the message (its first 64 bytes), its length and
+	 * the digest returned for it; psa_verify_hash(): the digest length. */
+	unsigned hash_calls;
+	uint8_t hashed_msg[64];
+	size_t hashed_len;
+	uint8_t hashed_digest[32];
+	size_t last_hash_len;
 
 	/* mbedTLS side */
 	int32_t mtls_setkey_ret;

@@ -62,6 +62,79 @@ tag was cut.
   pairs with it in place), but it was one reboot away from a lock forgetting
   a changed Wi-Fi password.
 
+### The Watch's Access Document: two reasons it could not verify
+
+The first field log in which a Watch answered the document request
+(ESP32-S3, log received 2026-10-04, with the DO'53 fix below): every approach ended in
+`Access Document verdict: step=2 issuer=1 sig=0 dig=1 type=1 time=0`, four
+or five tries, then `GeneralError 0x00` from the Watch. The document
+arrived, decrypted and parsed. `time=0` is certain: the document requires
+time verification. `sig=0` is not: with two or more issuer keys stored, that
+line printed the verdict of the last key tried, so a document whose only
+fault was step 5 also read `step=2 sig=0` unless its signer was stored last.
+
+- **A document that requires time verification was always refused
+  (`time=0`).** Neither board has a wall clock and the learn path told the
+  verifier so; a document whose MSO sets TimeVerificationRequired then fails
+  step 5 whatever its signature says, and the Watch's sets it. The reader now
+  keeps the newest `validFrom` a stored issuer has signed as its time (RAM,
+  set by the first accepted document after boot), and a signature-verified
+  document ahead of that time moves it forward instead of failing: the
+  ratchet the reference door-lock application already carries
+  (`docs/protocol-notes.md`). A document whose `validUntil` lies behind that
+  time is still refused, and a date nobody signed moves nothing. Only a
+  document that ended in a learned key moves the time, never one that was
+  refused, and never one signed by a key its own certificate brought along.
+  The cost: until a first document sets the time after each boot, an expired
+  document from a stored issuer is not recognised as expired, and its key is
+  learned for good. The reference application narrows that by also
+  persisting its clock; this reader does not yet. It is a departure from the
+  letter of Aliro §7.2.4, which has a reader that cannot validate the time
+  treat such a document as invalid. A future-dated document from a stored
+  issuer moves the time forward until the next reboot, as it does there.
+- **An MSO over about 480 bytes read as a bad signature (`sig=0`).** The
+  verifier built the COSE Sig_structure in a 512-byte stack buffer and, when
+  it did not fit, reported the signature invalid without checking it. The
+  parser keeps up to 24 value digests (12 on the CDK) at 35 bytes each, so a
+  document it accepted could be one that never verified. The structure is now
+  hashed in pieces and the digest verified
+  (`ultrawidelock_ecdsa_p256_verify_hash`): the signature check has no size
+  limit and uses 512 bytes less stack. Every other signature check in the
+  firmware (the update header, AUTH1, Matter) now takes the same path: the
+  message verify hashes through PSA and verifies the digest. With
+  `psa_verify_message` kept beside `psa_verify_hash` the nRF52833 images
+  grew by about 230 bytes, and the anchorlink image, which had 24 bytes to
+  spare, no longer signed. The field log did not record the
+  document's size, so whether this is what failed the Watch's signature is
+  not confirmed yet.
+- **A document with no IssuerAuth handed the signature check a null
+  pointer.** Any device presenting an unknown key could answer the document
+  request with a DeviceResponse that has data elements and no IssuerAuth; the
+  parser accepts it with no signature, and step 2 passed that on. A PSA
+  backend that copies its input reads through it (a fault on the host build
+  under a sanitizer; on the ESP32 likely a reset, not confirmed on target).
+  Step 2 now fails such a document without calling the primitive. This
+  predates the Watch change.
+- **The verdict is the signer's.** The issuers are still tried in turn, but
+  the loop stops at the one whose signature verified, so a later step's
+  refusal is logged as that step and not as the next issuer's bad signature.
+  The reason reads `its document is not valid` in that case and `no
+  provisioned issuer signed it` only when none did.
+- **A refused document says what it was checked against.** After the verdict
+  line: `document: kid ... x5chain= sigstruct= tvr= from= until= now=`, then
+  one `issuer[n]: <first 8 bytes> kid <8 bytes>` line per stored issuer key.
+  The kid is the first 8 bytes of SHA-256("key-identifier" || key), which is
+  how the document names its issuer. A kid no stored issuer matches means the
+  controller never installed that issuer; a match with `sig=0` puts the fault
+  in the check. At debug level (`log ultrawidelock_reader debug` on the
+  ESP32) the decrypted DeviceResponse is dumped as well.
+- **DWM3001CDK: a document that requires time verification is still
+  refused.** Its lean parser drops the validity dates to fit the flash, so
+  the ratchet has nothing to read and is not built there, and neither are
+  the operand lines: with them the debug image overflowed its slot by 12
+  bytes, without them it has 1,184 bytes left (432,480 of 433,664). The
+  signature fixes apply to both boards.
+
 ### The Watch gets in without `trust`
 
 - **A second device on the owner's Apple ID is admitted through its Access

@@ -94,6 +94,10 @@ int ultrawidelock_ecdsa_p256_sign_hash(const uint8_t priv[ULTRAWIDELOCK_P256_SCA
 				       const uint8_t hash[32], uint8_t sig[ULTRAWIDELOCK_P256_SIG]);
 int ultrawidelock_ecdsa_p256_verify(const uint8_t pub[ULTRAWIDELOCK_P256_POINT], const uint8_t *msg,
 				    size_t msg_len, const uint8_t sig[ULTRAWIDELOCK_P256_SIG]);
+/* The same check over an already computed SHA-256 digest. */
+int ultrawidelock_ecdsa_p256_verify_hash(const uint8_t pub[ULTRAWIDELOCK_P256_POINT],
+					 const uint8_t hash[32],
+					 const uint8_t sig[ULTRAWIDELOCK_P256_SIG]);
 
 #ifdef __cplusplus
 }

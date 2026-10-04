@@ -97,7 +97,7 @@ static size_t seal_device_sd(const uint8_t skd[32], uint32_t ctr, const uint8_t 
 /* SV_GOOD carries a synthetic golden signature the fake-EC prim cannot verify.
  * Re-sign the COSE Sig_structure with the prim double's own keypair and patch
  * the signature bytes in a copy, so the worker's hardcoded
- * ctx.ecdsa_verify = ultrawidelock_ecdsa_p256_verify accepts it end-to-end. */
+ * ctx.ecdsa_verify_hash = ultrawidelock_ecdsa_p256_verify_hash accepts it end-to-end. */
 static uint8_t s_good[600];
 static size_t s_good_len;
 static uint8_t s_issuer_pub[65];

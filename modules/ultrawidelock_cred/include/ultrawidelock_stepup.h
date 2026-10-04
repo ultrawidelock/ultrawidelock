@@ -27,9 +27,9 @@
  *                         validity + the issuer-signature check via an injected
  *                         ES256 verify).
  *
- * The ES256 primitive is passed in (ultrawidelock_stepup_verify_ctx.ecdsa_verify) so this
- * module carries no elliptic-curve dependency: the target wires the PSA-backed
- * ultrawidelock_ecdsa_p256_verify, the host injects its own.
+ * The ES256 primitive is passed in (ultrawidelock_stepup_verify_ctx.ecdsa_verify_hash) so
+ * this module carries no elliptic-curve dependency: the target wires the PSA-backed
+ * ultrawidelock_ecdsa_p256_verify_hash, the host injects its own.
  */
 #pragma once
 
@@ -278,20 +278,32 @@ struct ultrawidelock_stepup_issuer {
 
 /**
  * Context for Step-up document verification: issuers (trust store), time_valid/now_epoch (clock
- * state), access_iteration (stored iteration for replay check), expected_doctype, ecdsa_verify
- * callback (ES256 over message, takes 65-byte pub, message, 64-byte r||s sig, returns 0 on valid).
+ * state), time_ratchet (validity policy), access_iteration (stored iteration for replay check),
+ * expected_doctype, ecdsa_verify_hash callback (ES256 over a SHA-256 digest, takes 65-byte pub,
+ * 32-byte digest, 64-byte r||s sig, returns 0 on valid).
  */
 struct ultrawidelock_stepup_verify_ctx {
 	const struct ultrawidelock_stepup_issuer *issuers;
 	size_t n_issuers;
 	int time_valid;            /* reader holds a trusted clock (timesync) */
 	int64_t now_epoch;         /* current UTC seconds; used only when time_valid */
+	/* A document whose signature verified under a key from `issuers` (never one
+	 * its own x5chain brought along) and whose validFrom lies ahead of the
+	 * reader's time, or the reader has none, sets the time instead of failing
+	 * step 5: validFrom is then an issuer-signed timestamp, and a phone mints its
+	 * document on demand with validFrom = its own clock (docs/protocol-notes.md).
+	 * The verdict's ratchet_epoch is what the caller must not fall behind again,
+	 * once it has accepted the document. */
+	int time_ratchet;
 	uint64_t access_iteration; /* stored AccessIteration for this issuer (default 0) */
 	const char *expected_doctype;
-	/* ES256 over msg (hashing internal), pub = 65-byte point, sig = 64-byte r||s.
-	 * Returns 0 on a valid signature. Target: ultrawidelock_ecdsa_p256_verify. */
-	int (*ecdsa_verify)(const uint8_t pub[65], const uint8_t *msg, size_t msg_len,
-			    const uint8_t sig[64]);
+	/* ES256 over the SHA-256 digest of the Sig_structure, pub = 65-byte point,
+	 * sig = 64-byte r||s. Returns 0 on a valid signature. Target:
+	 * ultrawidelock_ecdsa_p256_verify_hash. A digest, not the message: the
+	 * Sig_structure is as long as the MSO, and hashing it in pieces is what keeps
+	 * the document's size out of the signature check. */
+	int (*ecdsa_verify_hash)(const uint8_t pub[65], const uint8_t hash[32],
+				 const uint8_t sig[64]);
 };
 
 /**
@@ -313,6 +325,8 @@ struct ultrawidelock_stepup_verdict {
 	int time_ok;                /* step 5 */
 	int iteration_ok;           /* step 6 */
 	size_t valid_elements;      /* disclosed items whose digest verified */
+	size_t sig_struct_len;      /* step 2: bytes of Sig_structure the digest covered */
+	int64_t ratchet_epoch;      /* step 5 passed by taking validFrom as the time; else 0 */
 	size_t n_digests_dropped;   /* from the parsed doc: past the caps */
 	size_t n_items_dropped;
 	uint8_t truncated;          /* from the parsed doc: ULTRAWIDELOCK_STEPUP_TRUNC_* */

@@ -151,22 +151,34 @@ int ultrawidelock_stepup_build_get_response(uint8_t le, uint8_t *out, size_t cap
 
 /* ---- verifier (§7.4) ----------------------------------------------------- */
 
-/* Build the COSE Sig_structure ["Signature1", protected, ext_aad(empty), payload]
- * that the IssuerAuth ES256 signature covers. Returns the length or 0 on error. */
-static size_t build_sig_structure(const struct ultrawidelock_stepup_doc *doc, uint8_t *out,
-				  size_t cap)
+/* SHA-256 of the COSE Sig_structure ["Signature1", protected, ext_aad(empty), payload]
+ * that the IssuerAuth ES256 signature covers, hashed in pieces: the payload is the
+ * whole MSO, and building the structure in a 512-byte buffer made every MSO past
+ * about 480 bytes read as a bad signature, well inside what the parser holds.
+ * Returns the structure's length, or 0 on error. */
+static size_t hash_sig_structure(const struct ultrawidelock_stepup_doc *doc, uint8_t out[32])
 {
-	struct cw w = {out, out + cap, 0};
+	struct ultrawidelock_sha256 h;
+	uint8_t head[24];
+	struct cw w = {head, head + sizeof(head), 0};
+	size_t n;
 
+	ultrawidelock_sha256_init(&h);
 	cw_arr(&w, 4);
 	cw_tstr(&w, "Signature1");
-	cw_bstr(&w, doc->protected_hdr, doc->protected_len);
+	cw_type(&w, 0x40, doc->protected_len);
+	ultrawidelock_sha256_update(&h, head, (size_t)(w.p - head));
+	ultrawidelock_sha256_update(&h, doc->protected_hdr, doc->protected_len);
+	n = (size_t)(w.p - head) + doc->protected_len;
+
+	w.p = head;
 	cw_bstr(&w, NULL, 0); /* external_aad = empty bstr */
-	cw_bstr(&w, doc->payload, doc->payload_len);
-	if (w.err) {
-		return 0;
-	}
-	return (size_t)(w.p - out);
+	cw_type(&w, 0x40, doc->payload_len);
+	ultrawidelock_sha256_update(&h, head, (size_t)(w.p - head));
+	ultrawidelock_sha256_update(&h, doc->payload, doc->payload_len);
+	n += (size_t)(w.p - head) + doc->payload_len;
+	ultrawidelock_sha256_final(&h, out);
+	return w.err ? 0 : n;
 }
 
 /* Extract a P-256 end-entity public key from an x5chain: scan for the SPKI
@@ -273,13 +285,15 @@ int ultrawidelock_stepup_verify(const struct ultrawidelock_stepup_doc *doc,
 
 	v->issuer_key_found = select_issuer(doc, ctx, issuer_pub, &v->issuer_chain_validated) == 0;
 
-	/* Step 2: IssuerAuth ES256 verification. */
-	if (v->issuer_key_found && ctx->ecdsa_verify != NULL) {
-		uint8_t sig_struct[512];
-		size_t ss = build_sig_structure(doc, sig_struct, sizeof(sig_struct));
+	/* Step 2: IssuerAuth ES256 verification. A document that carries no
+	 * IssuerAuth has no signature to hand the primitive (the parser leaves the
+	 * pointers NULL), and fails here. */
+	if (v->issuer_key_found && ctx->ecdsa_verify_hash != NULL && doc->signature != NULL) {
+		uint8_t digest[32];
 
-		v->sig_ok = ss > 0 &&
-			    ctx->ecdsa_verify(issuer_pub, sig_struct, ss, doc->signature) == 0;
+		v->sig_struct_len = hash_sig_structure(doc, digest);
+		v->sig_ok = v->sig_struct_len > 0 &&
+			    ctx->ecdsa_verify_hash(issuer_pub, digest, doc->signature) == 0;
 	}
 
 	/* Step 3: recompute each disclosed item's digest against valueDigests. */
@@ -304,10 +318,22 @@ int ultrawidelock_stepup_verify(const struct ultrawidelock_stepup_doc *doc,
 			 strcmp(doc->doc_type, ctx->expected_doctype) == 0);
 
 	/* Step 5: validity window under the TimeVerificationRequired policy (§7.2.4). */
-	if (ctx->time_valid) {
+	int have_now = ctx->time_valid;
+	int64_t now = ctx->now_epoch;
+
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN) /* a lean parse keeps no dates to take the time from */
+	if (ctx->time_ratchet && v->sig_ok && v->issuer_chain_validated && doc->have_valid_from &&
+	    doc->have_valid_until &&
+	    doc->valid_from_epoch <= doc->valid_until_epoch &&
+	    (!have_now || now < doc->valid_from_epoch)) {
+		now = doc->valid_from_epoch;
+		have_now = 1;
+		v->ratchet_epoch = now;
+	}
+#endif
+	if (have_now) {
 		v->time_ok = doc->have_valid_from && doc->have_valid_until &&
-			     ctx->now_epoch >= doc->valid_from_epoch &&
-			     ctx->now_epoch <= doc->valid_until_epoch;
+			     now >= doc->valid_from_epoch && now <= doc->valid_until_epoch;
 	} else {
 		/* cannot validate time: required -> invalid; else reference treats valid. */
 		v->time_ok = !doc->time_verification_required;

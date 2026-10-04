@@ -496,24 +496,31 @@ int ultrawidelock_ecdh_p256(const uint8_t priv[ULTRAWIDELOCK_P256_SCALAR],
 	return 0;
 }
 
-/* sig = two SHA-256 halves bound to the signer's X coordinate and H(msg). */
-static void fake_sig(const uint8_t x[32], const uint8_t *msg, size_t msg_len,
-		     uint8_t sig[ULTRAWIDELOCK_P256_SIG])
+/* sig = two SHA-256 halves bound to the signer's X coordinate and h = H(msg). */
+static void fake_sig_hash(const uint8_t x[32], const uint8_t h[ULTRAWIDELOCK_SHA256_LEN],
+			  uint8_t sig[ULTRAWIDELOCK_P256_SIG])
 {
-	uint8_t h[ULTRAWIDELOCK_SHA256_LEN];
 	struct ultrawidelock_sha256 s;
 
-	ultrawidelock_sha256(msg, msg_len, h);
 	ultrawidelock_sha256_init(&s);
 	ultrawidelock_sha256_update(&s, "ultrawidelock-fake-r", 10);
 	ultrawidelock_sha256_update(&s, x, 32);
-	ultrawidelock_sha256_update(&s, h, sizeof(h));
+	ultrawidelock_sha256_update(&s, h, ULTRAWIDELOCK_SHA256_LEN);
 	ultrawidelock_sha256_final(&s, sig);
 	ultrawidelock_sha256_init(&s);
 	ultrawidelock_sha256_update(&s, "ultrawidelock-fake-s", 10);
 	ultrawidelock_sha256_update(&s, x, 32);
-	ultrawidelock_sha256_update(&s, h, sizeof(h));
+	ultrawidelock_sha256_update(&s, h, ULTRAWIDELOCK_SHA256_LEN);
 	ultrawidelock_sha256_final(&s, sig + 32);
+}
+
+static void fake_sig(const uint8_t x[32], const uint8_t *msg, size_t msg_len,
+		     uint8_t sig[ULTRAWIDELOCK_P256_SIG])
+{
+	uint8_t h[ULTRAWIDELOCK_SHA256_LEN];
+
+	ultrawidelock_sha256(msg, msg_len, h);
+	fake_sig_hash(x, h, sig);
 }
 
 int ultrawidelock_ecdsa_p256_sign(const uint8_t priv[ULTRAWIDELOCK_P256_SCALAR], const uint8_t *msg,
@@ -536,5 +543,18 @@ int ultrawidelock_ecdsa_p256_verify(const uint8_t pub[ULTRAWIDELOCK_P256_POINT],
 		return -1;
 	}
 	fake_sig(pub + 1, msg, msg_len, want);
+	return memcmp(want, sig, ULTRAWIDELOCK_P256_SIG) == 0 ? 0 : -1;
+}
+
+int ultrawidelock_ecdsa_p256_verify_hash(const uint8_t pub[ULTRAWIDELOCK_P256_POINT],
+					 const uint8_t hash[32],
+					 const uint8_t sig[ULTRAWIDELOCK_P256_SIG])
+{
+	uint8_t want[ULTRAWIDELOCK_P256_SIG];
+
+	if (pub[0] != 0x04) {
+		return -1;
+	}
+	fake_sig_hash(pub + 1, hash, want);
 	return memcmp(want, sig, ULTRAWIDELOCK_P256_SIG) == 0 ? 0 : -1;
 }
