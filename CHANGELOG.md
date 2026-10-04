@@ -24,7 +24,10 @@ tag was cut.
   holds another key is answered Occupied and changes nothing, a Modify
   replaces the key, and a clear removes every key carrying the address, which
   also covers a store that already holds two. Host-tested. Whether Home then
-  files a second key under index 2 is the bench run still to do.
+  files a second key under index 2 is the bench run still to do, and the log
+  now shows it: `-> asks about credential type 7 index 1` under each
+  `GetCredentialStatus`, and `-> SetCredential status 0x03` when an Add is
+  declined as Occupied.
 - **A Watch's Access Document was refused on every approach
   (`Access Document verdict: step=5 ... sig=1 ... time=0`).** The Watch's
   document requires time verification, the lock has no clock, and the answer

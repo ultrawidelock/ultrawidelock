@@ -182,6 +182,18 @@ static uint8_t command_status_logged(void *ctx, const struct matter_im_invoke *i
 		 * cluster here answers with this command id. */
 		LOG_INF("  -> user %u in use %u", s_info.last_user_index,
 			s_info.users[s_info.last_user_index - 1u].in_use);
+	} else if (*response_command == MATTER_CMD_DL_GET_CREDENTIAL_STATUS_RESPONSE) {
+		/* Which address the controller is probing: it is choosing where
+		 * its next SetCredential goes, and the CREDENTIAL lines around
+		 * this one say what is already there. */
+		LOG_INF("  -> asks about credential type %u index %u", s_info.last_credential_type,
+			s_info.last_credential_index);
+	} else if (*response_command == MATTER_CMD_DL_SET_CREDENTIAL_RESPONSE &&
+		   s_info.last_credential_status != MATTER_IM_STATUS_SUCCESS) {
+		/* The verdict travels in the response body, so a SetCredential
+		 * this node declined looked like one that simply printed
+		 * nothing. 0x03 is Occupied: the index holds another key. */
+		LOG_WRN("  -> SetCredential status 0x%02x", s_info.last_credential_status);
 	}
 	return st;
 }
