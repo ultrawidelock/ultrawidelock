@@ -10,6 +10,89 @@ tag was cut.
 
 ## [Unreleased]
 
+### DWM3001CDK: one key per credential index, and the Watch's own document
+
+- **Every phone and Watch key was filed under credential index 1, so revoking
+  one device could revoke another.** `GetCredentialStatus` answered "does not
+  exist" for every index. Home asks it before each `SetCredential` to find a
+  free index, was told index 1 was free every time, and installed an iPhone's
+  key and then a Watch's key under the same address (measured 2026-10-04:
+  `CREDENTIAL ADDED (type 7, cred idx 1, user idx 1)` twice, `2 total`).
+  `ClearCredential` for that address removed the first match and reported
+  success. The lock now reports what its store holds at an index, with the
+  user it is filed under and the key itself. An Add naming an index that
+  holds another key is answered Occupied and changes nothing, a Modify
+  replaces the key, and a clear removes every key carrying the address, which
+  also covers a store that already holds two. Host-tested, and seen on the
+  bench on 2026-10-05: Home asked about type 7 index 1 before each key and
+  filed the second under index 2 (`CREDENTIAL ADDED (type 7, cred idx 2, user
+  idx 1)`), with no Add declined. The log shows the question as `-> asks about
+  credential type 7 index 1` under each `GetCredentialStatus`, and a declined
+  Add as `-> SetCredential status 0x03`.
+- **A Watch's Access Document was refused on every approach
+  (`Access Document verdict: step=5 ... sig=1 ... time=0`).** The Watch's
+  document requires time verification, the lock has no clock, and the answer
+  to that (take the time from the document's own signed `validFrom`) was
+  built for the ESP32 only: the CDK's lean parser dropped the validity dates
+  to save flash, so there was nothing to take it from. The Watch got in only
+  once Home sent its key directly. The CDK keeps the dates and the time
+  ratchet now, and still leaves out the COSE alg label, the x5chain and the
+  lines that print a rejected document's operands. Host-tested, including a
+  run of the verifier compiled the way the CDK compiles it, which nothing ran
+  before. Seen on the bench on 2026-10-05, forced with the lab switch below:
+  `key LEARNED from its Access Document (issuer 0): type 7 idx 2 user 1`,
+  the document time taken from its `validFrom`, and the lock opened.
+- **A lab switch asks every device for its Access Document.** The lock asks
+  only when it does not hold the device's key, and Home installed both keys
+  within 47 s of pairing, so the path above could not be reached on a bench.
+  `CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE`, set by
+  `overlays/bench-stepup-force.conf`, treats a presented key as unknown and
+  skips the fast phase. The pairing on the board is kept. Off by default; the
+  plain image is the same 432,160 B with the switch in the tree.
+- **A credential transaction's stack no longer depends on the optimiser's
+  mood.** The two fixes above added no large locals, and still moved over a
+  kilobyte of stack: they changed which handlers the link-time optimiser
+  folded into their caller. The standard phase went from 3,496 B to 4,496 B
+  below `transaction_feed()` and every Matter command gained 312 B, read
+  from the disassembly before anything was flashed. The phase handlers and
+  `opcred_command()` are out of line by declaration now; the deepest
+  direct-call path below `transaction_feed()` on the plain image is 3,744 B
+  where main had 4,344 B. `scripts/cdk-stack-depth.py` is the tool that found
+  it.
+- **The CDK images log less of Zephyr's own chatter.** The Bluetooth host is
+  at WARNING (the boot banner of controller build, HCI and LMP versions and
+  identity goes) and the I2C and sensor drivers are silent (the LIS2DH12;
+  `no impact sensor; tamper detection is off` is the application's line and
+  stays). Measured on the two-anchor image, which had 20 B of signing margin:
+  433,432 B to 431,268 B, 2,164 B back. The two fixes above cost about
+  1.3 KiB and are paid from that.
+
+### DWM3001CDK: one resumed subscription per controller
+
+- **Every lock or unlock was followed by `CASE message refused (-4)` and four
+  `invalid or unsuccessful StatusResponse` lines.** The lock stores each
+  subscription so a restart can hand it back to its controller. A controller
+  that subscribed again over a new session took a new slot and left its old
+  record behind, and after a restart every record for that controller came
+  back on its one new session. Measured 2026-10-05 with five records for one
+  hub: five reports per lock, four refused by the hub, which had replaced
+  those subscriptions long before, and the hub's answer to the first refused
+  by the lock, because an exchange remembers the last four ids this node
+  opened and that report was the fifth back. Unacknowledged, the hub sent
+  that answer four more times, 0.3 s to 0.9 s apart. The lock now resumes the
+  newest record for a controller and passes over the rest, and drops a
+  subscription the first time its controller refuses a report for it. The
+  records are also read at a boot with no fabric, so the ids handed out after
+  a factory reset stay above the ones left in flash; they restarted at 1,
+  which let a leftover outrank the live subscription. No host test compiles
+  this file. Seen on the bench on 2026-10-05: a fresh pairing continued the
+  ids at 0x0e, and after a restart four lock and unlock events each sent one
+  report with no refusal on either side. Not settled: a controller refused
+  one report on a fresh subscription (yesterday's firmware drew the same
+  refusals), the lock dropped that subscription, and whether the controller
+  had let go of it first is not known. 128 B on the two-anchor image:
+  433,324 B, 128 B of signing margin.
+
 ### DWM3001CDK: Apple Home removing the lock after a restart
 
 - **Home dropped the lock by itself after a reflash or a reset, and only an
@@ -147,12 +230,12 @@ fault was step 5 also read `step=2 sig=0` unless its signer was stored last.
   controller never installed that issuer; a match with `sig=0` puts the fault
   in the check. At debug level (`log ultrawidelock_reader debug` on the
   ESP32) the decrypted DeviceResponse is dumped as well.
-- **DWM3001CDK: a document that requires time verification is still
-  refused.** Its lean parser drops the validity dates to fit the flash, so
-  the ratchet has nothing to read and is not built there, and neither are
-  the operand lines: with them the debug image overflowed its slot by 12
-  bytes, without them it has 1,184 bytes left (432,480 of 433,664). The
-  signature fixes apply to both boards.
+- **DWM3001CDK: the operand lines are not built.** With them the debug image
+  overflowed its slot by 12 bytes. The signature fixes apply to both boards.
+  The ratchet was not built there either when this was written, because the
+  lean parser dropped the validity dates, and a document that requires time
+  verification was refused; see "one key per credential index, and the
+  Watch's own document" above for the change.
 
 ### The Watch gets in without `trust`
 
@@ -160,7 +243,10 @@ fault was step 5 also read `step=2 sig=0` unless its signer was stored last.
   Document.** Apple Home installs the home's credential issuer key
   (SetCredential type 6) and one endpoint key per iPhone, and never sends a
   SetCredential for a Watch on the same Apple ID (every field log so far: no
-  `invoke: ... cluster 0x0101` line while the Watch retried). The Watch
+  `invoke: ... cluster 0x0101` line while the Watch retried; the first
+  exception is 2026-10-04 on a DWM3001CDK, where one arrived 1 min 44 s
+  after the Watch's first refused approach, and what prompts it is not
+  known). The Watch
   therefore presented a key no anchor matched and every approach ended in
   `credential key NOT trusted`. That is how Aliro means it to work, not a
   missing install: the certified Nordic reference lock keeps the issuer key

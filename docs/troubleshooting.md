@@ -81,6 +81,30 @@ not advertise for pairing: share it again from the controller that is left, or
 hold SW2 through reset and pair from the start. A lock paired before that
 firmware has no stored table and needs this once more.
 
+**Two `CREDENTIAL ADDED` lines carry the same `type` and `cred idx`.** The store
+was written by DWM3001CDK firmware that told the controller every credential
+index was free, so it reused index 1. Revoking that index now removes every key
+filed under it, so removing one device in Home can take the other with it once;
+enable the device again and it is installed under an index of its own.
+
+**An Apple Watch is refused with `Access Document verdict: step=5 ... time=0`
+on a DWM3001CDK.** Firmware older than the kept document dates: its parser
+dropped `validFrom` and `validUntil`, and a document that requires time
+verification could not pass. The Watch works on that firmware only after Home
+sends its key (a `CREDENTIAL ADDED (type 7 ...)` line). On current firmware
+`time=0` means the dates did not parse, or `validUntil` is behind the newest
+`validFrom` the reader has learned from since boot.
+
+**Every lock or unlock is followed by `CASE message refused (-4)` and several
+`invalid or unsuccessful StatusResponse` lines.** DWM3001CDK firmware that
+resumed every stored subscription after a restart: it reported to each, and the
+controller refused the ones it had replaced. Current firmware resumes the newest
+one per controller. A single `invalid or unsuccessful StatusResponse` is a
+controller refusing a report for a subscription it no longer holds; the lock
+drops that subscription and the controller subscribes again within about
+3 minutes. The first restart after updating from the older firmware can show
+it once.
+
 **The lock reports a full fabric table.** Five committed fabrics are supported;
 Apple Home commonly accounts for two and Home Assistant one. Remove an unused
 controller through **Manage fabrics**: authenticated `RemoveFabric` tombstones

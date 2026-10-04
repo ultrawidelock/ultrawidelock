@@ -111,8 +111,10 @@ if(CONFIG_ULTRAWIDELOCK_CRED_STEPUP)
 	# slot, 98% of each before step-up). The parsed document's capacity is
 	# trimmed in prj.conf (CONFIG_ULTRAWIDELOCK_STEPUP_MAX_DIGESTS / _ITEMS).
 	# LEAN drops what this reader never reads from the document -- the
-	# dates (no trusted clock), the COSE alg label and the x5chain (only a
-	# provisioned issuer may vouch) -- for about 0.6 KiB of flash.
+	# COSE alg label and the x5chain (only a provisioned issuer may vouch)
+	# -- and the lines that print a rejected document's operands. It used
+	# to drop the validity dates too, for about 0.6 KiB in all; a Watch's
+	# document requires time verification and cannot pass without them.
 	target_compile_definitions(app PRIVATE
 		ULTRAWIDELOCK_STEPUP_LEAN=1
 	)

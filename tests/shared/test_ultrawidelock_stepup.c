@@ -414,10 +414,17 @@ static void t_synth_good_and_rejects(void)
 
 	xctx.n_issuers = 0; /* force x5chain path */
 	rc = verify_bytes(SV_X5CHAIN, SV_X5CHAIN_len, &xctx, &v);
+#if defined(ULTRAWIDELOCK_STEPUP_LEAN)
+	/* A lean build (the DWM3001CDK's) does not read the x5chain at all: with
+	 * no provisioned issuer there is no key, and a certificate the document
+	 * brought along never vouches for it. */
+	chk("lean: x5chain is no issuer", rc == -1 && !v.issuer_key_found && v.reject_step == 1);
+#else
 	chk("x5chain valid", rc == 0 && v.valid);
 	chk("x5chain key found", v.issuer_key_found);
 	chk("x5chain chain NOT validated", v.issuer_chain_validated == 0);
 	chk("x5chain Sig_structure==golden", g_golden_ss_ok == 1);
+#endif
 	g_mode = MODE_ACCEPT;
 
 	/* A key the document's own certificate brought along is no authority on
@@ -425,8 +432,12 @@ static void t_synth_good_and_rejects(void)
 	xctx.time_valid = 0;
 	xctx.time_ratchet = 1;
 	verify_bytes(SV_X5CHAIN, SV_X5CHAIN_len, &xctx, &v);
+#if defined(ULTRAWIDELOCK_STEPUP_LEAN)
+	chk("lean: x5chain never ratchets", !v.sig_ok && v.ratchet_epoch == 0);
+#else
 	chk("x5chain never ratchets",
 	    v.sig_ok && !v.issuer_chain_validated && v.ratchet_epoch == 0);
+#endif
 
 	/* No documents returned -> reject (no data elements). */
 	rc = verify_bytes(SV_NO_DOC, SV_NO_DOC_len, &ctx, &v);
@@ -1125,10 +1136,19 @@ static void t_stepup_edges(void)
 
 		chk("x5chain tiny parse", x5_splice(tiny, sizeof(tiny), &doc) == 0);
 		ultrawidelock_stepup_verify(&doc, &ctx, &v);
+#if defined(ULTRAWIDELOCK_STEPUP_LEAN)
+		/* Skipped, not read: the provisioned issuer is still the one tried. */
+		chk("lean: x5chain tiny is skipped", doc.x5chain == NULL && v.issuer_key_found);
+#else
 		chk("x5chain tiny reject step 1", v.reject_step == 1 && !v.issuer_key_found);
+#endif
 		chk("x5chain no-marker parse", x5_splice(nomark, sizeof(nomark), &doc) == 0);
 		ultrawidelock_stepup_verify(&doc, &ctx, &v);
+#if defined(ULTRAWIDELOCK_STEPUP_LEAN)
+		chk("lean: x5chain no-marker is skipped", doc.x5chain == NULL && v.issuer_key_found);
+#else
 		chk("x5chain no-marker reject step 1", v.reject_step == 1 && !v.issuer_key_found);
+#endif
 	}
 
 	/* No kid + no x5chain: a single provisioned issuer is used implicitly. */

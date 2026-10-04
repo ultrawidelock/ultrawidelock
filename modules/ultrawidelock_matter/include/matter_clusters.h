@@ -262,9 +262,15 @@ struct matter_uwb_config {
  * Asked immediately after the reader identity lands: the controller is
  * checking whether the credential it is about to install is already there.
  * Refusing it ends the pairing just as surely as refusing GetUser did.
+ *
+ * It is also how a controller picks the index for its next key. Told "does
+ * not exist" for every index, it filed each phone and Watch under index 1.
  */
 #define MATTER_CMD_DL_GET_CREDENTIAL_STATUS          0x0024u
 #define MATTER_CMD_DL_GET_CREDENTIAL_STATUS_RESPONSE 0x0025u
+
+/* GetCredentialStatus fields: the one CredentialStruct it asks about. */
+#define TAG_GETCREDSTATUS_CREDENTIAL 0u
 
 /* GetCredentialStatusResponse fields (Commands.h, its Fields enum). */
 #define TAG_CREDSTATUS_EXISTS          0u
@@ -306,6 +312,13 @@ struct matter_uwb_config {
 #define TAG_SETCREDRESP_STATUS     0u
 #define TAG_SETCREDRESP_USER_INDEX 1u
 #define TAG_SETCREDRESP_NEXT_INDEX 2u
+
+/* DataOperationTypeEnum (Enums.h): Add is 0, and Modify is the one value
+ * SetCredential treats differently -- it may replace the key at its index. */
+#define MATTER_DL_DATA_OP_MODIFY 2u
+/* SetCredentialResponse Status for an Add that names an index holding another
+ * key (DlStatus Occupied). The credential there is left as it was. */
+#define MATTER_DL_STATUS_OCCUPIED 0x03u
 
 /*
  * Aliro credential types (DoorLock/Enums.h, CredentialTypeEnum). Only these
@@ -936,6 +949,10 @@ struct matter_device_info {
 	uint16_t last_user_index;
 	/** The status SetCredential decided, held for its response encoder. */
 	uint8_t last_credential_status;
+	/** The credential the last GetCredentialStatus named, held for its
+	 *  response encoder, which asks the port what is stored there. */
+	uint8_t last_credential_type;
+	uint16_t last_credential_index;
 	/**
 	 * What LockState reports, and what LockDoor/UnlockDoor change.
 	 *
@@ -1065,6 +1082,20 @@ struct matter_device_info {
 	 * than one told it failed.
 	 */
 	int (*ultrawidelock_credential_clear_cb)(uint8_t credential_type, uint16_t credential_index);
+	/**
+	 * What the store holds as (@p credential_type, @p credential_index), set
+	 * by the port.
+	 *
+	 * Copies the key to @p public_key and returns the user index it is filed
+	 * under (0 when it has none), or a negative value when nothing is stored
+	 * at that address. This is the truth GetCredentialStatus reports and the
+	 * check that stops SetCredential binding a second key to an index in
+	 * use; NULL answers "nothing there" to both, as a port with no store
+	 * must.
+	 */
+	int (*ultrawidelock_credential_lookup_cb)(
+		uint8_t credential_type, uint16_t credential_index,
+		uint8_t public_key[MATTER_ALIRO_VERIFICATION_KEY_LEN]);
 	/**
 	 * Where a ClearUser lands, set by the port.
 	 *

@@ -2493,6 +2493,54 @@ int main(void)
 		okc("r.type_match_removes", ultrawidelock_reader_provision_remove_trust(7u, 61u) == 0);
 
 		/*
+		 * Two keys under one address. Found on hardware: the lock told a
+		 * controller every index was free, and it filed a phone and a
+		 * Watch both under (type 7, index 1). Revoking that address has to
+		 * take both, or the admin removes one device and the other goes on
+		 * opening the door under the name just revoked.
+		 */
+		okc("r.dup_clean", ultrawidelock_reader_trust_clear() >= 0);
+		okc("r.dup_add1", ultrawidelock_reader_provision_add_trust(rk1, 7u, 1u, 1u) == 0);
+		okc("r.dup_add2", ultrawidelock_reader_provision_add_trust(rk2, 7u, 1u, 1u) == 0);
+		okc("r.dup_remove", ultrawidelock_reader_provision_remove_trust(7u, 1u) == 0);
+		okc("r.dup_remove_again", ultrawidelock_reader_provision_remove_trust(7u, 1u) == 1);
+		/* Both gone: each re-add is an ADD (0), not a dedup (1). */
+		okc("r.dup_first_gone",
+		    ultrawidelock_reader_provision_add_trust(rk1, 7u, 81u, 1u) == 0);
+		okc("r.dup_second_gone",
+		    ultrawidelock_reader_provision_add_trust(rk2, 7u, 82u, 2u) == 0);
+
+		/* What an address holds: the key and its user, or nothing. This is
+		 * the answer GetCredentialStatus gives a controller looking for a
+		 * free index. */
+		{
+			uint8_t got[65];
+
+			memset(got, 0, sizeof(got));
+			okc("r.lookup_hit",
+			    ultrawidelock_reader_provision_cred_lookup(7u, 82u, got) == 2);
+			okc("r.lookup_key", memcmp(got, rk2, sizeof(got)) == 0);
+			okc("r.lookup_miss",
+			    ultrawidelock_reader_provision_cred_lookup(7u, 83u, got) == -1);
+			okc("r.lookup_type_scoped",
+			    ultrawidelock_reader_provision_cred_lookup(8u, 82u, got) == -1);
+			okc("r.lookup_unbound", ultrawidelock_reader_provision_cred_lookup(
+							7u, ULTRAWIDELOCK_CRED_INDEX_NONE, got) == -1);
+			/* An issuer key is a credential too (type 6), with an index
+			 * space of its own. */
+			okc("r.lookup_issuer_add",
+			    ultrawidelock_reader_provision_add_issuer(rk1, 5u, 7u) == 0);
+			okc("r.lookup_issuer",
+			    ultrawidelock_reader_provision_cred_lookup(6u, 5u, got) == 7 &&
+				    memcmp(got, rk1, sizeof(got)) == 0);
+			okc("r.lookup_issuer_scoped",
+			    ultrawidelock_reader_provision_cred_lookup(6u, 82u, got) == -1);
+			okc("r.lookup_issuer_gone",
+			    ultrawidelock_reader_provision_remove_issuer(5u) == 0 &&
+				    ultrawidelock_reader_provision_cred_lookup(6u, 5u, got) == -1);
+		}
+
+		/*
 		 * ClearCredential's two wildcards. Clearing one type must leave
 		 * the other alone; clearing type 0 means everything, bench-added
 		 * anchors included -- they are not Matter credentials, but

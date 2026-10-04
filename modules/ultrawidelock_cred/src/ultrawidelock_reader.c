@@ -70,6 +70,11 @@ static enum provisioning_state s_provisioning_state;
 #define CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST 0
 #endif
 
+/* LAB ONLY: every device is asked for its Access Document, trusted or not. */
+#ifndef CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE
+#define CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE 0
+#endif
+
 /* Most-recently-presented credential public key (the one the device signature
  * verified against). Captured for the `ultrawidelock-trust` bench command. */
 static uint8_t s_last_cred_pub[ULTRAWIDELOCK_CRED_PUB_LEN];
@@ -709,8 +714,24 @@ static bool spare_eph_refill(void)
 	return valid;
 }
 
+/*
+ * A phase handler of transaction_feed(), or one of the two branches under a
+ * handler that copies a trust store. Kept out of line.
+ *
+ * Each carries a few hundred bytes to over a kilobyte of scratch. Left to the
+ * optimiser, some were folded into transaction_feed() and some were not, and
+ * which ones changed from build to build: the frame of whichever stayed out
+ * went on top of a transaction_feed() frame already sized for the ones folded
+ * in. MEASURED 2026-10-05 on the DWM3001CDK plain image, deepest direct-call
+ * path below transaction_feed(): 4,344 B on main (learn_commit out, AUTH1 in),
+ * 4,496 B after a change elsewhere flipped that (AUTH1 out, the rest in), and
+ * the standard phase alone went from 3,496 B to 4,496 B. Out of line, a
+ * transaction costs the handler that is running and nothing for the others.
+ */
+#define PHASE_HANDLER __attribute__((noinline))
+
 /* Kick the reader-driven access protocol: ephemeral keys + txid -> AUTH0. */
-static void start_auth(struct ultrawidelock_session *s)
+static PHASE_HANDLER void start_auth(struct ultrawidelock_session *s)
 {
 	if (s_provisioning_state != PROVISIONING_READY &&
 	    !(CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST &&
@@ -842,8 +863,8 @@ static bool send_exchange(struct ultrawidelock_session *s)
  * unlock attribution. Returns 0 when the session was consumed (EXCHANGE sent,
  * or a hard failure); -1 when nothing matched and the caller should continue
  * with the standard phase. */
-static int try_fast_auth(struct ultrawidelock_session *s,
-			 const struct ultrawidelock_auth0_response *r)
+static PHASE_HANDLER int try_fast_auth(struct ultrawidelock_session *s,
+				       const struct ultrawidelock_auth0_response *r)
 {
 	uint8_t salt[ULTRAWIDELOCK_SALT_MAX], block[ULTRAWIDELOCK_KEY_BLOCK_LEN];
 	uint8_t plain[ULTRAWIDELOCK_CRYPTOGRAM_LEN];
@@ -941,7 +962,8 @@ static int try_fast_auth(struct ultrawidelock_session *s,
 // parse failure, ECDH failure, signing failure) sets s->phase to PH_FAILED and returns without
 // sending. On success sets s->phase to PH_SENT_AUTH1 after sending the AUTH1 command. Logs (does
 // not fail on) an unexpected status word other than 0x9000.
-static void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl, size_t len)
+static PHASE_HANDLER void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl,
+					    size_t len)
 {
 	// Holds the fields parsed from an AUTH0Response APDU while it is being processed by the
 	// reader's response handler.
@@ -971,7 +993,8 @@ static void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl
 	/* Fast-phase trial: only when we asked (command_parameters bit 0) and the
 	 * phone answered with a cryptogram. A failed trial is not fatal — §8.2
 	 * allows continuing with the standard phase. */
-	if (s->exp_phase_sent == 0x01u && r.have_cryptogram) {
+	if (!CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE && s->exp_phase_sent == 0x01u &&
+	    r.have_cryptogram) {
 		if (try_fast_auth(s, &r) == 0) {
 			return;
 		}
@@ -1028,7 +1051,8 @@ static void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl
 // success, seals and sends the EXCHANGE command, sets s->phase to PH_SENT_EXCHANGE, and logs the
 // derived URSK; on any failure path sets s->phase to PH_FAILED and returns without sending
 // EXCHANGE.
-static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl, size_t len)
+static PHASE_HANDLER void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl,
+					    size_t len)
 {
 	// Holds the fields parsed from an AUTH1Response APDU while it is being processed by the
 	// reader's response handler.
@@ -1159,6 +1183,10 @@ static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl
 	int tv = ultrawidelock_prov_trust_check(&s_trust, cred_pub);
 	ultrawidelock_mutex_unlock(&s_prov_lock);
 
+	if (CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE && tv == 0) {
+		/* Known, and made to prove it with its document all the same. */
+		tv = -1;
+	}
 	if (tv == 0) {
 		LOG_INF("[conn %u] credential key TRUSTED", s->conn_handle);
 	} else if (tv == 1 && s_id.is_dev && CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST &&
@@ -1534,10 +1562,14 @@ static void stepup_submit_job(struct ultrawidelock_session *s)
  * that makes it an Access Document for THIS key -- the MSO deviceKey must be the
  * key the device signed AUTH1 with. Returns the slot of the issuer that signed
  * it and copies its key to issuer_pub, or -1 with *why set. *v carries the last
- * §7.4 verdict for the log. */
-static int learn_verify(struct ultrawidelock_session *s,
-			uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN], const char **why,
-			struct ultrawidelock_stepup_verdict *v, bool *x5chain)
+ * §7.4 verdict for the log.
+ *
+ * Out of line so that its issuer table and the verifier's scratch are gone
+ * before learn_commit() copies the trust store. */
+static PHASE_HANDLER int learn_verify(struct ultrawidelock_session *s,
+				      uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN],
+				      const char **why, struct ultrawidelock_stepup_verdict *v,
+				      bool *x5chain)
 {
 	struct ultrawidelock_stepup_issuer issuers[ULTRAWIDELOCK_ISSUER_MAX];
 	struct ultrawidelock_stepup_verify_ctx ctx;
@@ -1592,8 +1624,8 @@ static int learn_verify(struct ultrawidelock_session *s,
 	 * step 5 whatever its signature said. The time is the newest validFrom
 	 * a stored issuer has signed (s_doc_time), and a document ahead of it
 	 * moves it forward, as the reference lock's ratchet does
-	 * (docs/protocol-notes.md). A lean build parses no dates, so there the
-	 * ratchet has nothing to read and such a document still fails. No
+	 * (docs/protocol-notes.md). A lean build used to parse no dates and
+	 * so refused every such document; it keeps them now. No
 	 * access-iteration history is kept yet, so step 6 always passes. */
 	ctx.time_valid = s_doc_time != 0;
 	ctx.now_epoch = s_doc_time;
@@ -1636,7 +1668,6 @@ static int learn_verify(struct ultrawidelock_session *s,
 	return picked;
 }
 
-#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 /* Seconds since 1970 for a log line; a validUntil in the year 4001 does not fit
  * 32 bits and prints as the largest value that does. */
 static unsigned log_epoch(int64_t t)
@@ -1644,6 +1675,7 @@ static unsigned log_epoch(int64_t t)
 	return t < 0 ? 0u : t > (int64_t)UINT32_MAX ? UINT32_MAX : (unsigned)t;
 }
 
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 /*
  * What a rejected document was checked against. The verdict line says a step
  * failed and not which operands failed it, and for step 2 the explanations
@@ -1652,8 +1684,8 @@ static unsigned log_epoch(int64_t t)
  * signature still fails, or its own certificate signed it (x5chain). The kid
  * is the first 8 bytes of SHA-256("key-identifier" || issuer key), Aliro
  * §7.2.1. First 8 bytes of each key, as for the anchors; only on a rejection.
- * Not on a lean build: it parses neither the dates nor the x5chain, and the
- * lines cost about 0.5 KiB of flash that the nRF52833 debug image does not have.
+ * Not on a lean build: it does not parse the x5chain, and the lines cost about
+ * 0.5 KiB of flash that the nRF52833 debug image does not have.
  */
 static void learn_log_operands(const struct ultrawidelock_stepup_verdict *v, bool x5chain)
 {
@@ -1692,8 +1724,8 @@ static void learn_log_operands(const struct ultrawidelock_stepup_verdict *v, boo
  * type, mint its Kpersistent, persist -- and only then publish the grant. Same
  * rule as the Matter add: a key that cannot be persisted is not trusted.
  * Returns 0, or -1 when the key is NOT trusted. */
-static int learn_commit(struct ultrawidelock_session *s,
-			const uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN])
+static PHASE_HANDLER int learn_commit(struct ultrawidelock_session *s,
+				      const uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN])
 {
 	struct ultrawidelock_reader_identity id;
 	struct ultrawidelock_trust_store cand;
@@ -1814,7 +1846,6 @@ static void learn_decide(struct ultrawidelock_session *s)
 		learn_reject(s, "learned key not persisted");
 		return;
 	}
-#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 	/* Only a document that ended in a learned key moves the time: one that
 	 * vouched for another key, or whose key could not be stored, was refused,
 	 * and a refused document sets nothing. Forward only. */
@@ -1823,7 +1854,6 @@ static void learn_decide(struct ultrawidelock_session *s)
 		LOG_INF("[conn %u] document time moved to %u (validFrom of the learned document)",
 			s->conn_handle, log_epoch(s_doc_time));
 	}
-#endif
 	s->stepup_active = false;
 	s->learn_pending = false;
 	notify_access(true);
@@ -1832,7 +1862,8 @@ static void learn_decide(struct ultrawidelock_session *s)
 
 /* Collect the DeviceResponse across ENVELOPE / GET RESPONSE (ISO7816 61XX
  * chaining) before completing the AP. The worker verifies it afterwards. */
-static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *pl, size_t len)
+static PHASE_HANDLER void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *pl,
+					     size_t len)
 {
 	uint16_t sw;
 
@@ -1917,7 +1948,8 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 
 /* Handle the EXCHANGE response, then complete the AP and arm ranging. The body is
  * an AP (proto-0) response on the ExpeditedSK channel: <ct || 16B tag> SW1SW2. */
-static void on_exchange_response(struct ultrawidelock_session *s, const uint8_t *pl, size_t len)
+static PHASE_HANDLER void on_exchange_response(struct ultrawidelock_session *s, const uint8_t *pl,
+					       size_t len)
 {
 	uint16_t sw;
 
@@ -3549,22 +3581,31 @@ int ultrawidelock_reader_provision_remove_trust(uint8_t cred_type, uint16_t cred
 	struct ultrawidelock_reader_identity id;
 	struct ultrawidelock_trust_store cand;
 	uint8_t removed[ULTRAWIDELOCK_CRED_PUB_LEN];
+	int found = 0;
 	int idx;
 
 	/* Found, removed and snapshotted in one critical section. The add path
 	 * mutates a snapshot and commits it later, which on a removal would let
-	 * a SetCredential that landed in between put the revoked anchor back. */
+	 * a SetCredential that landed in between put the revoked anchor back.
+	 *
+	 * Every match, not the first. A controller told that an occupied index
+	 * was free installed a second key under it, and removing only the first
+	 * revoked the wrong device and left the named address opening the door. */
 	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
-	idx = ultrawidelock_prov_find_cred_index(&s_trust, cred_type, cred_index);
-	if (idx >= 0) {
+	while ((idx = ultrawidelock_prov_find_cred_index(&s_trust, cred_type, cred_index)) >= 0) {
 		memcpy(removed, s_trust.cred_pub[idx], ULTRAWIDELOCK_CRED_PUB_LEN);
-		(void)ultrawidelock_prov_trust_remove_at(&s_trust, idx);
+		if (ultrawidelock_prov_trust_remove_at(&s_trust, idx) != 0) {
+			break;
+		}
+		found++;
+	}
+	if (found != 0) {
 		id = s_id;
 		cand = s_trust;
 		s_fast_mru = -1;
 	}
-	if (idx < 0) {
+	if (found == 0) {
 		/* Nothing to take out now, but an earlier removal may still be
 		 * unwritten. This is the caller most likely to exist when there is
 		 * no session to end: an admin repeating a command that reported a
@@ -3580,10 +3621,44 @@ int ultrawidelock_reader_provision_remove_trust(uint8_t cred_type, uint16_t cred
 	ultrawidelock_mutex_unlock(&s_prov_lock);
 	store_unlock();
 
-	revoke_aftermath(removed);
+	/* One key: only the latches it holds. Several: both, as for a type. */
+	revoke_aftermath(found > 1 ? NULL : removed);
 	LOG_INF("credential type %u index %u REVOKED (%u anchor(s) left)", (unsigned int)cred_type,
 		(unsigned int)cred_index, cand.count);
 	return rc;
+}
+
+// Which key a Matter admin installed as (cred_type, cred_index); see ultrawidelock/reader.h.
+// An issuer key and a trust anchor live in separate tables with separate index spaces, which is
+// the same split Door Lock makes by credential type.
+int ultrawidelock_reader_provision_cred_lookup(uint8_t cred_type, uint16_t cred_index,
+					       uint8_t cred_pub[ULTRAWIDELOCK_CRED_PUB_LEN])
+{
+	load_provisioning();
+
+	const uint8_t *key = NULL;
+	uint16_t user = ULTRAWIDELOCK_CRED_INDEX_NONE;
+	int idx;
+
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	if (cred_type == ULTRAWIDELOCK_CRED_TYPE_ALIRO_ISSUER) {
+		idx = ultrawidelock_prov_issuer_find_index(&s_trust, cred_index);
+		if (idx >= 0) {
+			key = s_trust.issuer_pub[idx];
+			user = s_trust.issuer_user_index[idx];
+		}
+	} else {
+		idx = ultrawidelock_prov_find_cred_index(&s_trust, cred_type, cred_index);
+		if (idx >= 0) {
+			key = s_trust.cred_pub[idx];
+			user = s_trust.user_index[idx];
+		}
+	}
+	if (key != NULL) {
+		memcpy(cred_pub, key, ULTRAWIDELOCK_CRED_PUB_LEN);
+	}
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	return key != NULL ? (int)user : -1;
 }
 
 // Revoke every trust anchor of one Matter credential type, or every anchor there is when

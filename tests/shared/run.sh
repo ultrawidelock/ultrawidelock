@@ -106,6 +106,24 @@ blk_stepup() {
 		"$HERE/ultrawidelock_prim_host.c" -o "$SBIN"
 	"$SBIN"
 	rm -f "$SBIN"
+
+	# The same suite the way the DWM3001CDK compiles it. ULTRAWIDELOCK_STEPUP_LEAN
+	# is a -D only that app sets, so nothing here ever ran the verifier that
+	# ships on that board -- and it refused every Watch, because the lean parse
+	# dropped the dates the time check needs. The date and ratchet checks are
+	# the same ones as above; only the x5chain ones differ, in the test.
+	echo
+	echo "== host: ultrawidelock_stepup, lean build (ULTRAWIDELOCK_STEPUP_LEAN, as the DWM3001CDK) =="
+	SBIN="$(mktemp -t ultrawidelock_stepup_lean_kat.XXXXXX)"
+	cc -std=c11 -O1 -Wall -Wextra -DULTRAWIDELOCK_STEPUP_LEAN=1 \
+		-I "$HERE" -I "$CRED/include" -I "$CRED/src" \
+		"$HERE/test_ultrawidelock_stepup.c" \
+		"$CRED/src/ultrawidelock_stepup.c" "$CRED/src/ultrawidelock_stepup_wire.c" \
+		"$CRED/src/ultrawidelock_stepup_parse.c" "$CRED/src/ultrawidelock_tlv.c" \
+		"$CRED/src/ultrawidelock_hash.c" "$CRED/src/ultrawidelock_crypto.c" \
+		"$HERE/ultrawidelock_prim_host.c" -o "$SBIN"
+	"$SBIN"
+	rm -f "$SBIN"
 }
 
 blk_prov() {

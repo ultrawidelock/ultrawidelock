@@ -182,6 +182,18 @@ static uint8_t command_status_logged(void *ctx, const struct matter_im_invoke *i
 		 * cluster here answers with this command id. */
 		LOG_INF("  -> user %u in use %u", s_info.last_user_index,
 			s_info.users[s_info.last_user_index - 1u].in_use);
+	} else if (*response_command == MATTER_CMD_DL_GET_CREDENTIAL_STATUS_RESPONSE) {
+		/* Which address the controller is probing: it is choosing where
+		 * its next SetCredential goes, and the CREDENTIAL lines around
+		 * this one say what is already there. */
+		LOG_INF("  -> asks about credential type %u index %u", s_info.last_credential_type,
+			s_info.last_credential_index);
+	} else if (*response_command == MATTER_CMD_DL_SET_CREDENTIAL_RESPONSE &&
+		   s_info.last_credential_status != MATTER_IM_STATUS_SUCCESS) {
+		/* The verdict travels in the response body, so a SetCredential
+		 * this node declined looked like one that simply printed
+		 * nothing. 0x03 is Occupied: the index holds another key. */
+		LOG_WRN("  -> SetCredential status 0x%02x", s_info.last_credential_status);
 	}
 	return st;
 }
@@ -2027,12 +2039,27 @@ static void sub_persist_load(void)
 /**
  * A CASE session just came up. If a stored subscription belongs to this peer on
  * this fabric, put it back to work on the new session.
+ *
+ * ONE per peer, the newest. A controller that subscribes again over a new
+ * session takes a new slot and leaves its old record behind, and every one of
+ * them matched here. Measured 2026-10-05: five records for one hub came back on
+ * one session, each lock sent five reports, the hub refused the four it had
+ * long since replaced, and its answer to the first was refused in turn, because
+ * an exchange remembers the last four ids this node opened and that was the
+ * fifth (matter_exchange::init_exchange). Unacknowledged, the hub sent it four
+ * more times.
+ *
+ * The older records are passed over, not erased. They are a few slots of 24
+ * bytes that the next subscription to land there overwrites, and passing over
+ * them again at each boot writes no flash from inside a handshake.
  */
 static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric_index,
 			   uint16_t session_id)
 {
 	uint64_t fabric_id = 0u;
+	uint8_t keep = MATTER_CASE_SESSIONS;
 	struct matter_thread_peer peer;
+	struct sub_state *s;
 
 	ARG_UNUSED(case_slot);
 
@@ -2051,42 +2078,48 @@ static void sub_resume_for(uint8_t case_slot, uint64_t peer_node, uint8_t fabric
 	}
 	matter_thread_peer_current(&peer);
 	for (uint8_t i = 0u; i < MATTER_CASE_SESSIONS; i++) {
-		struct sub_state *s = &s_subs[i];
-
 		if (!s_dormant[i].used || s_dormant[i].peer_node != peer_node ||
 		    s_dormant[i].fabric_index != fabric_index ||
 		    s_dormant[i].fabric_id != fabric_id) {
 			continue;
 		}
-		if (s->in_use && s->active && s->id == s_dormant[i].id) {
-			/* Already live -- the controller re-subscribed before we
-			 * got here, which is the outcome that needs no help. */
-			s_dormant[i].used = 0u;
-			continue;
-		}
-		memset(s, 0, sizeof(*s));
-		s->id = s_dormant[i].id;
-		s->max_interval_s = s_dormant[i].max_interval_s;
-		s->session_id = session_id;
-		s->in_use = true;
-		s->active = true;
-		s->priming = false;
-		s->peer = peer;
 		s_dormant[i].used = 0u;
-
-		LOG_DBG("  subscription 0x%08x RESUMED on session 0x%04x after the reboot",
-			(unsigned int)s->id, (unsigned int)session_id);
-		subscription_heartbeat_arm();
+		if (keep == MATTER_CASE_SESSIONS || s_dormant[i].id > s_dormant[keep].id) {
+			keep = i;
+		}
 	}
+	if (keep == MATTER_CASE_SESSIONS) {
+		return;
+	}
+	s = &s_subs[keep];
+	if (s->in_use && s->active && s->id == s_dormant[keep].id) {
+		/* Already live -- the controller re-subscribed before we
+		 * got here, which is the outcome that needs no help. */
+		return;
+	}
+	memset(s, 0, sizeof(*s));
+	s->id = s_dormant[keep].id;
+	s->max_interval_s = s_dormant[keep].max_interval_s;
+	s->session_id = session_id;
+	s->in_use = true;
+	s->active = true;
+	s->priming = false;
+	s->peer = peer;
+
+	LOG_DBG("  subscription 0x%08x RESUMED on session 0x%04x after the reboot",
+		(unsigned int)s->id, (unsigned int)session_id);
+	subscription_heartbeat_arm();
 }
 
 /*
- * There is deliberately no erase for these. A record is only LOADED when a
- * fabric loads, and can only be CLAIMED by a CASE session whose peer node and
- * fabric index both match -- a factory reset destroys both, so whatever is left
- * in NVS is unreachable rather than dangerous, and the next commissioning
- * overwrites the slots it needs. Three records of 24 bytes is the whole cost of
- * not adding a second thing that must be kept in step with the fabric erase.
+ * There is deliberately no erase for these at a factory reset, and that is safe
+ * only because they are LOADED at every boot, fabric or not. A reset does not
+ * destroy what a claim matches on: a lock added to the same home again meets
+ * the same hub under the same node id on fabric index 1. Loaded, the leftovers
+ * push s_sub_next_id past their ids, so a subscription granted after the reset
+ * is the newest and sub_resume_for() passes over the rest. Loaded only with a
+ * fabric, as they once were, the ids restarted at 1 after a reset and a
+ * leftover outranked the live one.
  */
 
 /*
@@ -3304,6 +3337,15 @@ static void on_status_response(const struct matter_exchange_in *in)
 		LOG_WRN("invalid or unsuccessful StatusResponse");
 		if (read != NULL) {
 			read->in_use = false;
+		}
+		/*
+		 * I clear: the answer to a report this node opened, so the
+		 * subscriber has disowned the subscription. Reporting to it again
+		 * buys the same refusal on every lock, and so would resuming it.
+		 */
+		if (s != NULL && !in->initiator) {
+			s->in_use = false;
+			s_dormant[s - s_subs].used = 0u;
 		}
 		return;
 	}
@@ -4684,6 +4726,7 @@ int matter_commission_init(void)
 	s_info.ultrawidelock_reader_config_cb = on_ultrawidelock_reader_config;
 	s_info.ultrawidelock_credential_cb = on_ultrawidelock_credential;
 	s_info.ultrawidelock_credential_clear_cb = on_ultrawidelock_credential_clear;
+	s_info.ultrawidelock_credential_lookup_cb = ultrawidelock_reader_provision_cred_lookup;
 	s_info.ultrawidelock_user_clear_cb = on_ultrawidelock_user_clear;
 
 	matter_clusters_init(&s_im, &s_info);
@@ -4736,12 +4779,10 @@ int matter_commission_init(void)
 #endif
 		rc = matter_fab_load(&s_info);
 		fabric_snapshot_refresh_owned();
+		/* With or without a fabric: see the note under sub_resume_for(). */
+		sub_persist_load();
 
 		if (rc == 0) {
-			/* Only with a fabric: a record whose fabric did not
-			 * survive can never be claimed, and loading it would
-			 * hold a slot against nothing. */
-			sub_persist_load();
 			rc = matter_clusters_resume(&s_info);
 			if (rc != MATTER_OK) {
 				LOG_ERR("restored a fabric but could not rejoin Thread (%d); "

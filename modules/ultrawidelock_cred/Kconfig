@@ -64,6 +64,20 @@ config ULTRAWIDELOCK_CRED_STEPUP_BENCH
 	  port-supplied worker (ultrawidelock_stepup_worker_submit / _last), which
 	  the DWM3001CDK image has neither of, so it stays off there.
 
+config ULTRAWIDELOCK_CRED_STEPUP_FORCE
+	bool "LAB ONLY: ask every device for its Access Document"
+	depends on ULTRAWIDELOCK_CRED_STEPUP
+	help
+	  Treat a presented key as unknown even when the trust store holds it,
+	  and skip the fast phase, so every walk-up takes the learn path: the
+	  document is asked for, verified, and the key learned from it or
+	  refused. A device that advertises no document is refused. For seeing
+	  that path run against a controller that installs every key before its
+	  device first walks up, which Apple Home did within 47 s of pairing on
+	  2026-10-05. Unlike the bench one-shot it needs no console and no
+	  worker. Never in an image on a door: every unlock gains a document
+	  exchange and a trust store write.
+
 config ULTRAWIDELOCK_CRED_STEPUP_SD_MAX
 	int "Step-up DeviceResponse collection buffer (bytes)"
 	depends on ULTRAWIDELOCK_CRED_STEPUP
