@@ -23,11 +23,12 @@ tag was cut.
   user it is filed under and the key itself. An Add naming an index that
   holds another key is answered Occupied and changes nothing, a Modify
   replaces the key, and a clear removes every key carrying the address, which
-  also covers a store that already holds two. Host-tested. Whether Home then
-  files a second key under index 2 is the bench run still to do, and the log
-  now shows it: `-> asks about credential type 7 index 1` under each
-  `GetCredentialStatus`, and `-> SetCredential status 0x03` when an Add is
-  declined as Occupied.
+  also covers a store that already holds two. Host-tested, and seen on the
+  bench on 2026-10-05: Home asked about type 7 index 1 before each key and
+  filed the second under index 2 (`CREDENTIAL ADDED (type 7, cred idx 2, user
+  idx 1)`), with no Add declined. The log shows the question as `-> asks about
+  credential type 7 index 1` under each `GetCredentialStatus`, and a declined
+  Add as `-> SetCredential status 0x03`.
 - **A Watch's Access Document was refused on every approach
   (`Access Document verdict: step=5 ... sig=1 ... time=0`).** The Watch's
   document requires time verification, the lock has no clock, and the answer
@@ -38,7 +39,16 @@ tag was cut.
   ratchet now, and still leaves out the COSE alg label, the x5chain and the
   lines that print a rejected document's operands. Host-tested, including a
   run of the verifier compiled the way the CDK compiles it, which nothing ran
-  before; not yet seen with a Watch.
+  before. Seen on the bench on 2026-10-05, forced with the lab switch below:
+  `key LEARNED from its Access Document (issuer 0): type 7 idx 2 user 1`,
+  the document time taken from its `validFrom`, and the lock opened.
+- **A lab switch asks every device for its Access Document.** The lock asks
+  only when it does not hold the device's key, and Home installed both keys
+  within 47 s of pairing, so the path above could not be reached on a bench.
+  `CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE`, set by
+  `overlays/bench-stepup-force.conf`, treats a presented key as unknown and
+  skips the fast phase. The pairing on the board is kept. Off by default; the
+  plain image is the same 432,160 B with the switch in the tree.
 - **A credential transaction's stack no longer depends on the optimiser's
   mood.** The two fixes above added no large locals, and still moved over a
   kilobyte of stack: they changed which handlers the link-time optimiser
@@ -75,8 +85,13 @@ tag was cut.
   records are also read at a boot with no fabric, so the ids handed out after
   a factory reset stay above the ones left in flash; they restarted at 1,
   which let a leftover outrank the live subscription. No host test compiles
-  this file, so this is checked by build and waits for the bench. 128 B on
-  the two-anchor image: 433,324 B, 128 B of signing margin.
+  this file. Seen on the bench on 2026-10-05: a fresh pairing continued the
+  ids at 0x0e, and after a restart four lock and unlock events each sent one
+  report with no refusal on either side. Not settled: a controller refused
+  one report on a fresh subscription (yesterday's firmware drew the same
+  refusals), the lock dropped that subscription, and whether the controller
+  had let go of it first is not known. 128 B on the two-anchor image:
+  433,324 B, 128 B of signing margin.
 
 ### DWM3001CDK: Apple Home removing the lock after a restart
 
