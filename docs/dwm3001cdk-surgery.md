@@ -100,6 +100,36 @@ Two traps when reading it:
 Rule on this part: **large single-use objects belong on a stack with known headroom, not
 in BSS**, once that headroom is measured.
 
+### 1.5 The optimiser decides the depth, and changes its mind
+
+**MEASURED 2026-10-05, from the disassembly; not yet from the paint.** Two changes that
+added no large locals moved over a kilobyte of stack, because they changed what the
+link-time optimiser chose to fold into a caller:
+
+| Function | Before | After an unrelated change | Why |
+|---|---|---|---|
+| `command()` (every Matter command) | 144 B frame | 456 B | `opcred_command()`, 404 B of scratch, folded in |
+| standard phase below `transaction_feed()` | 3,496 B | 4,496 B | `on_auth1_response()` left out, its 1,168 B on top of a frame sized for the handlers folded in |
+
+A frame that stays out of line is added to its caller's. A frame folded in is merged
+with its siblings', but then every sibling pays for the largest. Which of those the
+optimiser picks is not stable from one build to the next, and nothing reported it.
+
+The handlers that carry the scratch are now out of line by declaration
+(`PHASE_HANDLER` in `ultrawidelock_reader.c`, `noinline` on `opcred_command()`), so a
+transaction costs the handler that is running. Deepest direct-call path below
+`transaction_feed()` on the plain image: **4,344 B on main, 3,744 B now**.
+
+```sh
+arm-zephyr-eabi-objdump -d --no-show-raw-insn \
+    build/cdk-matter/dwm3001cdk-lock/zephyr/zephyr.elf > /tmp/cdk.dis
+scripts/cdk-stack-depth.py /tmp/cdk.dis transaction_feed command
+scripts/cdk-stack-depth.py --frames 600 /tmp/cdk.dis
+```
+
+It follows direct calls only, so it is a lower bound and not a replacement for the paint.
+It is the same lower bound for two builds, and it runs before anything is flashed.
+
 ---
 
 ## 2. Matter state must not be written from the OpenThread thread
@@ -380,6 +410,34 @@ never matches a walk-up on its own.
 **An absence in a capture is evidence about the capture, not about the protocol.**
 Captures showing only type 6 were captures of pairings that never got far enough to send
 type 7: the subscription bug (§3.1) was stopping them.
+
+### 6.4 An index is an address: say which ones are taken
+
+**MEASURED 2026-10-04; the fix is host-tested and not yet proven on the bench.** Home
+sends `GetCredentialStatus` before each `SetCredential`. The node answered "does not
+exist" whatever was asked, a comment calling that the honest answer of a node with no
+credential database. It has one: the trust store. Told index 1 was free every time, Home
+filed an iPhone's key and a Watch's key both as `type 7, cred idx 1`.
+
+The store took both, and `ClearCredential(type 7, index 1)` removed whichever came first
+and reported success. An admin who removes one device revokes the other and leaves the
+one they named opening the door.
+
+Four changes, one rule:
+
+- `GetCredentialStatus` asks the port what is stored at the address and reports it:
+  exists, the user index, and the key as `CredentialData`. The fabric indices stay null,
+  because the store records a key's user and not the fabric that installed it.
+- `SetCredential` Add on an index holding a different key answers `Occupied` and changes
+  nothing. The same key again is still a success: Home re-sends keys it has installed.
+- `SetCredential` Modify revokes the key at the index, then stores the new one. A
+  revocation that did not stick stops there.
+- `ClearCredential` removes every anchor carrying the address, which also makes a store
+  written before this change safe to revoke from.
+
+**Rule: an answer the controller uses to choose where to write is part of the write.**
+A stub that is true about "what this node implements" can still be false about "what
+this node holds".
 
 ---
 
