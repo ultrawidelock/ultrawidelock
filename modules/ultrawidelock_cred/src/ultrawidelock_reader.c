@@ -70,6 +70,11 @@ static enum provisioning_state s_provisioning_state;
 #define CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST 0
 #endif
 
+/* LAB ONLY: every device is asked for its Access Document, trusted or not. */
+#ifndef CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE
+#define CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE 0
+#endif
+
 /* Most-recently-presented credential public key (the one the device signature
  * verified against). Captured for the `ultrawidelock-trust` bench command. */
 static uint8_t s_last_cred_pub[ULTRAWIDELOCK_CRED_PUB_LEN];
@@ -988,7 +993,8 @@ static PHASE_HANDLER void on_auth0_response(struct ultrawidelock_session *s, con
 	/* Fast-phase trial: only when we asked (command_parameters bit 0) and the
 	 * phone answered with a cryptogram. A failed trial is not fatal — §8.2
 	 * allows continuing with the standard phase. */
-	if (s->exp_phase_sent == 0x01u && r.have_cryptogram) {
+	if (!CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE && s->exp_phase_sent == 0x01u &&
+	    r.have_cryptogram) {
 		if (try_fast_auth(s, &r) == 0) {
 			return;
 		}
@@ -1177,6 +1183,10 @@ static PHASE_HANDLER void on_auth1_response(struct ultrawidelock_session *s, con
 	int tv = ultrawidelock_prov_trust_check(&s_trust, cred_pub);
 	ultrawidelock_mutex_unlock(&s_prov_lock);
 
+	if (CONFIG_ULTRAWIDELOCK_CRED_STEPUP_FORCE && tv == 0) {
+		/* Known, and made to prove it with its document all the same. */
+		tv = -1;
+	}
 	if (tv == 0) {
 		LOG_INF("[conn %u] credential key TRUSTED", s->conn_handle);
 	} else if (tv == 1 && s_id.is_dev && CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST &&
