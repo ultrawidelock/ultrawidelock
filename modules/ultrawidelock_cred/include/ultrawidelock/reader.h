@@ -212,10 +212,21 @@ int ultrawidelock_reader_provision_add_trust(const uint8_t cred_pub[65], uint8_t
 
 /** Revoke the anchor installed as Door Lock (@p cred_type, @p cred_index). Both
  *  halves are matched, because a Matter credential index is scoped to its type.
- *  Returns 0 (revoked and persisted), 1 (no anchor carries that pair, so the
- *  named credential is not trusted either way), or the store's negative errno
- *  (revoked in RAM, not persisted). */
+ *  EVERY anchor carrying the pair goes, not the first: an index is meant to name
+ *  one key, but a store written before SetCredential refused an occupied index
+ *  can hold two under it, and an admin revoking one address must not leave a
+ *  key behind it. Returns 0 (revoked and persisted), 1 (no anchor carries that
+ *  pair, so the named credential is not trusted either way), or the store's
+ *  negative errno (revoked in RAM, not persisted). */
 int ultrawidelock_reader_provision_remove_trust(uint8_t cred_type, uint16_t cred_index);
+
+/** Which key a Matter admin installed as Door Lock (@p cred_type, @p cred_index):
+ *  an issuer key for type 6, a trust anchor otherwise. This is what
+ *  GetCredentialStatus reports, and what tells a SetCredential that its index is
+ *  taken. Copies the key to @p cred_pub and returns the user index it is filed
+ *  under (0 when it has none), or -1 when nothing is stored at that address. */
+int ultrawidelock_reader_provision_cred_lookup(uint8_t cred_type, uint16_t cred_index,
+					       uint8_t cred_pub[65]);
 
 /** Revoke every anchor of Door Lock credential type @p cred_type, or every anchor
  *  there is when @p cred_type is 0 -- ClearCredential's two wildcards, an index

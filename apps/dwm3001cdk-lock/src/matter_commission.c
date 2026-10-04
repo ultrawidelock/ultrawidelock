@@ -4684,6 +4684,7 @@ int matter_commission_init(void)
 	s_info.ultrawidelock_reader_config_cb = on_ultrawidelock_reader_config;
 	s_info.ultrawidelock_credential_cb = on_ultrawidelock_credential;
 	s_info.ultrawidelock_credential_clear_cb = on_ultrawidelock_credential_clear;
+	s_info.ultrawidelock_credential_lookup_cb = ultrawidelock_reader_provision_cred_lookup;
 	s_info.ultrawidelock_user_clear_cb = on_ultrawidelock_user_clear;
 
 	matter_clusters_init(&s_im, &s_info);

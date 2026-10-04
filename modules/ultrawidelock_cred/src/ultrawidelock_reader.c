@@ -3573,22 +3573,31 @@ int ultrawidelock_reader_provision_remove_trust(uint8_t cred_type, uint16_t cred
 	struct ultrawidelock_reader_identity id;
 	struct ultrawidelock_trust_store cand;
 	uint8_t removed[ULTRAWIDELOCK_CRED_PUB_LEN];
+	int found = 0;
 	int idx;
 
 	/* Found, removed and snapshotted in one critical section. The add path
 	 * mutates a snapshot and commits it later, which on a removal would let
-	 * a SetCredential that landed in between put the revoked anchor back. */
+	 * a SetCredential that landed in between put the revoked anchor back.
+	 *
+	 * Every match, not the first. A controller told that an occupied index
+	 * was free installed a second key under it, and removing only the first
+	 * revoked the wrong device and left the named address opening the door. */
 	store_lock();
 	ultrawidelock_mutex_lock(&s_prov_lock);
-	idx = ultrawidelock_prov_find_cred_index(&s_trust, cred_type, cred_index);
-	if (idx >= 0) {
+	while ((idx = ultrawidelock_prov_find_cred_index(&s_trust, cred_type, cred_index)) >= 0) {
 		memcpy(removed, s_trust.cred_pub[idx], ULTRAWIDELOCK_CRED_PUB_LEN);
-		(void)ultrawidelock_prov_trust_remove_at(&s_trust, idx);
+		if (ultrawidelock_prov_trust_remove_at(&s_trust, idx) != 0) {
+			break;
+		}
+		found++;
+	}
+	if (found != 0) {
 		id = s_id;
 		cand = s_trust;
 		s_fast_mru = -1;
 	}
-	if (idx < 0) {
+	if (found == 0) {
 		/* Nothing to take out now, but an earlier removal may still be
 		 * unwritten. This is the caller most likely to exist when there is
 		 * no session to end: an admin repeating a command that reported a
@@ -3604,10 +3613,44 @@ int ultrawidelock_reader_provision_remove_trust(uint8_t cred_type, uint16_t cred
 	ultrawidelock_mutex_unlock(&s_prov_lock);
 	store_unlock();
 
-	revoke_aftermath(removed);
+	/* One key: only the latches it holds. Several: both, as for a type. */
+	revoke_aftermath(found > 1 ? NULL : removed);
 	LOG_INF("credential type %u index %u REVOKED (%u anchor(s) left)", (unsigned int)cred_type,
 		(unsigned int)cred_index, cand.count);
 	return rc;
+}
+
+// Which key a Matter admin installed as (cred_type, cred_index); see ultrawidelock/reader.h.
+// An issuer key and a trust anchor live in separate tables with separate index spaces, which is
+// the same split Door Lock makes by credential type.
+int ultrawidelock_reader_provision_cred_lookup(uint8_t cred_type, uint16_t cred_index,
+					       uint8_t cred_pub[ULTRAWIDELOCK_CRED_PUB_LEN])
+{
+	load_provisioning();
+
+	const uint8_t *key = NULL;
+	uint16_t user = ULTRAWIDELOCK_CRED_INDEX_NONE;
+	int idx;
+
+	ultrawidelock_mutex_lock(&s_prov_lock);
+	if (cred_type == ULTRAWIDELOCK_CRED_TYPE_ALIRO_ISSUER) {
+		idx = ultrawidelock_prov_issuer_find_index(&s_trust, cred_index);
+		if (idx >= 0) {
+			key = s_trust.issuer_pub[idx];
+			user = s_trust.issuer_user_index[idx];
+		}
+	} else {
+		idx = ultrawidelock_prov_find_cred_index(&s_trust, cred_type, cred_index);
+		if (idx >= 0) {
+			key = s_trust.cred_pub[idx];
+			user = s_trust.user_index[idx];
+		}
+	}
+	if (key != NULL) {
+		memcpy(cred_pub, key, ULTRAWIDELOCK_CRED_PUB_LEN);
+	}
+	ultrawidelock_mutex_unlock(&s_prov_lock);
+	return key != NULL ? (int)user : -1;
 }
 
 // Revoke every trust anchor of one Matter credential type, or every anchor there is when

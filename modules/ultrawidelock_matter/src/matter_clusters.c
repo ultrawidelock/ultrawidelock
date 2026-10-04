@@ -2784,9 +2784,16 @@ static uint8_t add_noc(struct matter_device_info *info, const struct matter_im_i
  * Everything expensive happens here -- the signature, and for a CSR a fresh
  * P-256 key pair -- because this runs exactly once per request while
  * opcred_fields() may not.
+ *
+ * Out of line on purpose. Its frame is about 400 bytes of scratch, and the
+ * optimiser folding it into command() put that under every other command too:
+ * MEASURED 2026-10-05, command()'s frame went from 144 to 456 bytes after an
+ * unrelated change tipped the inliner. SetCredential runs under command() and
+ * goes on to copy a whole trust store onto the same stack.
  */
-static uint8_t opcred_command(struct matter_device_info *info, const struct matter_im_invoke *inv,
-			      uint32_t *response_command)
+static __attribute__((noinline)) uint8_t opcred_command(struct matter_device_info *info,
+							const struct matter_im_invoke *inv,
+							uint32_t *response_command)
 {
 	const uint8_t *nonce = NULL;
 	size_t nonce_len = 0u;
@@ -3079,6 +3086,24 @@ static void opcred_fields(const struct matter_device_info *info, uint32_t respon
  * mandatory. Accepting a config without it would leave the reader unable to
  * resolve the group it was just told it belongs to.
  */
+/*
+ * Does (type, index) already hold a key other than @p key?
+ *
+ * Its own frame on purpose: the 65 bytes the stored key is read into are gone
+ * before SetCredential calls the store, which copies a whole trust store onto
+ * the same stack.
+ */
+static __attribute__((noinline)) bool credential_index_taken(const struct matter_device_info *info,
+							     uint8_t type, uint16_t index,
+							     const uint8_t *key)
+{
+	uint8_t held[MATTER_ALIRO_VERIFICATION_KEY_LEN];
+
+	return info->ultrawidelock_credential_lookup_cb != NULL &&
+	       info->ultrawidelock_credential_lookup_cb(type, index, held) >= 0 &&
+	       memcmp(held, key, sizeof(held)) != 0;
+}
+
 /**
  * SetCredential: the credential trust anchor.
  *
@@ -3145,6 +3170,28 @@ static uint8_t set_credential(struct matter_device_info *info, const struct matt
 		 * ClearCredential refuses an out-of-range index the same way. */
 		info->last_credential_status = MATTER_IM_STATUS_INVALID_COMMAND;
 		return MATTER_IM_STATUS_SUCCESS;
+	}
+	/*
+	 * One key per index. An index is the only name ClearCredential has for
+	 * a key, so a second key bound to one that is taken would leave a
+	 * revocation ambiguous -- found on hardware as a phone and a Watch both
+	 * filed under index 1. Add leaves the key that is there and says
+	 * Occupied, which is what tells the controller to pick another index;
+	 * Modify replaces it, which is what Modify means.
+	 */
+	if (credential_index_taken(info, (uint8_t)cred_type, (uint16_t)cred_index, data)) {
+		uint64_t op = 0u;
+
+		(void)field_u64(inv, TAG_SETCRED_OPERATION, &op);
+		if (op != MATTER_DL_DATA_OP_MODIFY) {
+			info->last_credential_status = MATTER_DL_STATUS_OCCUPIED;
+			return MATTER_IM_STATUS_SUCCESS;
+		}
+		if (info->ultrawidelock_credential_clear_cb == NULL ||
+		    info->ultrawidelock_credential_clear_cb((uint8_t)cred_type,
+							    (uint16_t)cred_index) != 0) {
+			return MATTER_IM_STATUS_SUCCESS; /* status stays FAILURE */
+		}
 	}
 	if (have_user_index) {
 		info->last_user_index = (uint16_t)user_index;
@@ -3456,11 +3503,21 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 			/*
 			 * Asked right after the reader identity lands, to find
 			 * out whether the credential about to be installed is
-			 * already here. It is not: this node holds no
-			 * credential database, so the honest answer is that it
-			 * does not exist. Refusing the command instead ends the
-			 * pairing, exactly as refusing GetUser did.
+			 * already here, and before every later key to find an
+			 * index that is free. Refusing the command ends the
+			 * pairing, exactly as refusing GetUser did, so a
+			 * request this cannot read is answered as an address
+			 * that holds nothing: type 0 names no credential.
 			 */
+			uint64_t idx = 0u;
+
+			v = 0u;
+			(void)field_struct_u64(inv, TAG_GETCREDSTATUS_CREDENTIAL,
+					       TAG_CREDSTRUCT_TYPE, &v);
+			(void)field_struct_u64(inv, TAG_GETCREDSTATUS_CREDENTIAL,
+					       TAG_CREDSTRUCT_INDEX, &idx);
+			info->last_credential_type = (v > 0xFFu || idx > 0xFFFFu) ? 0u : (uint8_t)v;
+			info->last_credential_index = (uint16_t)idx;
 			*response_command = MATTER_CMD_DL_GET_CREDENTIAL_STATUS_RESPONSE;
 			return MATTER_IM_STATUS_SUCCESS;
 		}
@@ -3675,6 +3732,49 @@ static uint8_t command(void *ctx, const struct matter_im_invoke *inv, uint32_t *
 	}
 }
 
+/*
+ * GetCredentialStatusResponse: what the port's store holds at the address the
+ * command named.
+ *
+ * This answered "does not exist" for everything, and a controller that asks in
+ * order to find a free index then installed every endpoint key at index 1.
+ *
+ * The fabric indices stay null: the store records which user a key belongs to,
+ * not which fabric installed it. CredentialData is omitted, not null, for an
+ * address that holds nothing -- the answer every pairing so far was accepted
+ * with -- and is the key itself otherwise.
+ *
+ * Its own frame, so the key it reads back costs stack only for this response
+ * and not for every one command_fields() encodes.
+ */
+static __attribute__((noinline)) void credential_status_fields(const struct matter_device_info *info,
+							       struct matter_tlv_writer *w,
+							       matter_tlv_tag_t tag)
+{
+	uint8_t key[MATTER_ALIRO_VERIFICATION_KEY_LEN];
+	int user = -1;
+
+	if (info->ultrawidelock_credential_lookup_cb != NULL) {
+		user = info->ultrawidelock_credential_lookup_cb(info->last_credential_type,
+								info->last_credential_index, key);
+	}
+	(void)matter_tlv_start_container(w, tag, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_bool(w, MATTER_TLV_CTX(TAG_CREDSTATUS_EXISTS), user >= 0);
+	if (user > 0) {
+		(void)matter_tlv_put_u64(w, MATTER_TLV_CTX(TAG_CREDSTATUS_USER_INDEX),
+					 (uint64_t)user);
+	} else {
+		(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_CREDSTATUS_USER_INDEX));
+	}
+	(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_CREDSTATUS_CREATOR_FABRIC));
+	(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_CREDSTATUS_MODIFIER_FABRIC));
+	(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_CREDSTATUS_NEXT_INDEX));
+	if (user >= 0) {
+		(void)matter_tlv_put_bytes(w, MATTER_TLV_CTX(TAG_CREDSTATUS_DATA), key, sizeof(key));
+	}
+	(void)matter_tlv_end_container(w);
+}
+
 /**
  * Encode the fields of a command response based on endpoint, cluster, and response command type.
  * Handles Door Lock SetCredentialResponse and GetCredentialStatusResponse on the lock endpoint, and
@@ -3710,18 +3810,7 @@ static void command_fields(void *ctx, uint16_t endpoint, uint32_t cluster,
 		}
 		if (cluster == MATTER_CLUSTER_DOOR_LOCK &&
 		    response_command == MATTER_CMD_DL_GET_CREDENTIAL_STATUS_RESPONSE) {
-			/* Does not exist, and nothing describes a credential
-			 * that is not there. CredentialData is omitted rather
-			 * than null: it is only ever present for a credential
-			 * that exists, and only to an administrator. */
-			(void)matter_tlv_start_container(w, tag, MATTER_TLV_STRUCTURE);
-			(void)matter_tlv_put_bool(w, MATTER_TLV_CTX(TAG_CREDSTATUS_EXISTS), false);
-			(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_CREDSTATUS_USER_INDEX));
-			(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_CREDSTATUS_CREATOR_FABRIC));
-			(void)matter_tlv_put_null(w,
-						  MATTER_TLV_CTX(TAG_CREDSTATUS_MODIFIER_FABRIC));
-			(void)matter_tlv_put_null(w, MATTER_TLV_CTX(TAG_CREDSTATUS_NEXT_INDEX));
-			(void)matter_tlv_end_container(w);
+			credential_status_fields(info, w, tag);
 			return;
 		}
 		if (cluster == MATTER_CLUSTER_DOOR_LOCK &&

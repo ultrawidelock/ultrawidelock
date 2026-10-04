@@ -117,8 +117,30 @@ static const struct matter_commissioning_hooks k_store_hooks = {
 	.fabric_store = store_cb,
 };
 
+/* The port's credential store, as GetCredentialStatus and SetCredential see it:
+ * one occupied address, and the key and user filed there. Type 0 is empty. */
+static uint8_t s_lookup_type;
+static uint16_t s_lookup_index;
+static int s_lookup_user;
+static uint8_t s_lookup_key[MATTER_ALIRO_VERIFICATION_KEY_LEN];
+
+static int lookup_cb(uint8_t credential_type, uint16_t credential_index,
+		     uint8_t public_key[MATTER_ALIRO_VERIFICATION_KEY_LEN])
+{
+	if (s_lookup_type == 0u || credential_type != s_lookup_type ||
+	    credential_index != s_lookup_index) {
+		return -1;
+	}
+	memcpy(public_key, s_lookup_key, sizeof(s_lookup_key));
+	return s_lookup_user;
+}
+
 static void reset_doubles(void)
 {
+	s_lookup_type = 0u;
+	s_lookup_index = 0u;
+	s_lookup_user = 0;
+	memset(s_lookup_key, 0, sizeof(s_lookup_key));
 	s_store_calls = 0;
 	s_store_result = MATTER_OK;
 	s_store_operation = (enum matter_fabric_store_operation)0;
@@ -443,6 +465,98 @@ static size_t build_acl(uint8_t *buf, size_t cap, uint8_t privilege, uint64_t su
 		(void)matter_tlv_put_null(&w, MATTER_TLV_CTX(4u));
 	}
 	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_writer_finish(&w, &len);
+	return len;
+}
+
+static uint8_t run_command(struct matter_im_server *srv, uint32_t cluster, uint32_t cmd,
+			   const uint8_t *fields, size_t fields_len, uint32_t *response_command);
+
+/** What a GetCredentialStatusResponse said, field by field. */
+struct cred_status {
+	bool exists;
+	bool have_user;
+	uint64_t user;
+	bool have_data;
+	uint8_t data[MATTER_ALIRO_VERIFICATION_KEY_LEN];
+	size_t data_len;
+};
+
+/** Ask GetCredentialStatus about (type, index) and decode the answer. */
+static bool get_cred_status(struct matter_im_server *srv, uint64_t type, uint64_t index,
+			    struct cred_status *out)
+{
+	struct matter_tlv_writer w;
+	struct matter_tlv_reader r;
+	uint8_t buf[128];
+	uint32_t response = 0u;
+	size_t len = 0u;
+
+	memset(out, 0, sizeof(*out));
+	matter_tlv_writer_init(&w, buf, sizeof(buf));
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(TAG_GETCREDSTATUS_CREDENTIAL),
+					 MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_CREDSTRUCT_TYPE), type);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_CREDSTRUCT_INDEX), index);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_writer_finish(&w, &len);
+	if (run_command(srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_GET_CREDENTIAL_STATUS, buf,
+			len, &response) != MATTER_IM_STATUS_SUCCESS ||
+	    response != MATTER_CMD_DL_GET_CREDENTIAL_STATUS_RESPONSE) {
+		return false;
+	}
+
+	matter_tlv_writer_init(&w, buf, sizeof(buf));
+	srv->command_fields(srv->ctx, MATTER_ENDPOINT_LOCK, MATTER_CLUSTER_DOOR_LOCK, response, &w,
+			    MATTER_TLV_ANON);
+	if (matter_tlv_writer_finish(&w, &len) != MATTER_OK) {
+		return false;
+	}
+	matter_tlv_reader_init(&r, buf, len);
+	if (matter_tlv_next(&r) != MATTER_OK || matter_tlv_enter(&r) != MATTER_OK) {
+		return false;
+	}
+	while (matter_tlv_next(&r) == MATTER_OK) {
+		matter_tlv_tag_t tag = matter_tlv_tag(&r);
+		const uint8_t *bytes = NULL;
+
+		if (tag == MATTER_TLV_CTX(TAG_CREDSTATUS_EXISTS)) {
+			(void)matter_tlv_get_bool(&r, &out->exists);
+		} else if (tag == MATTER_TLV_CTX(TAG_CREDSTATUS_USER_INDEX)) {
+			out->have_user = matter_tlv_get_u64(&r, &out->user) == MATTER_OK;
+		} else if (tag == MATTER_TLV_CTX(TAG_CREDSTATUS_DATA)) {
+			out->have_data = matter_tlv_get_bytes(&r, &bytes, &out->data_len) ==
+						 MATTER_OK &&
+					 out->data_len <= sizeof(out->data);
+			if (out->have_data) {
+				memcpy(out->data, bytes, out->data_len);
+			}
+		}
+	}
+	return true;
+}
+
+/** SetCredential fields with an OperationType, which build_cred_fields leaves out. */
+static size_t build_cred_op_fields(uint8_t *buf, size_t cap, uint64_t op, uint64_t cred_type,
+				   uint64_t cred_index, const uint8_t *data)
+{
+	struct matter_tlv_writer w;
+	size_t len = 0u;
+
+	matter_tlv_writer_init(&w, buf, cap);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_ANON, MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_SETCRED_OPERATION), op);
+	(void)matter_tlv_start_container(&w, MATTER_TLV_CTX(TAG_SETCRED_CREDENTIAL),
+					 MATTER_TLV_STRUCTURE);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_CREDSTRUCT_TYPE), cred_type);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_CREDSTRUCT_INDEX), cred_index);
+	(void)matter_tlv_end_container(&w);
+	(void)matter_tlv_put_bytes(&w, MATTER_TLV_CTX(TAG_SETCRED_DATA), data,
+				   MATTER_ALIRO_VERIFICATION_KEY_LEN);
+	(void)matter_tlv_put_u64(&w, MATTER_TLV_CTX(TAG_SETCRED_USER_INDEX), 1u);
 	(void)matter_tlv_end_container(&w);
 	(void)matter_tlv_writer_finish(&w, &len);
 	return len;
@@ -1786,6 +1900,148 @@ void test_matter_clusters(void)
 		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_USER, NULL, 0u,
 				 NULL),
 		     MATTER_IM_STATUS_INVALID_COMMAND);
+	}
+
+	/*
+	 * Found on hardware: GetCredentialStatus said "does not exist" for every
+	 * index, so Apple Home, which asks in order to find a free one, installed
+	 * a phone's key and then a Watch's key both as (type 7, index 1). The
+	 * trust store held two keys under one address and ClearCredential for
+	 * that address removed only the first.
+	 */
+	t_group("GetCredentialStatus reports what the store holds");
+	{
+		struct cred_status st;
+		uint8_t stored[MATTER_ALIRO_VERIFICATION_KEY_LEN];
+
+		reset_doubles();
+		fill_info(&info);
+		info.ultrawidelock_credential_lookup_cb = lookup_cb;
+		matter_clusters_init(&srv, &info);
+		pattern(stored, sizeof(stored), 0x21u);
+		s_lookup_type = MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT;
+		s_lookup_index = 1u;
+		s_lookup_user = 3;
+		memcpy(s_lookup_key, stored, sizeof(stored));
+
+		T_OK("an occupied index answers",
+		     get_cred_status(&srv, MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 1u, &st));
+		T_OK("and says the credential exists", st.exists);
+		T_OK("under the user it is filed under", st.have_user && st.user == 3u);
+		T_OK("with the key itself as CredentialData",
+		     st.have_data && st.data_len == sizeof(stored) &&
+			     memcmp(st.data, stored, sizeof(stored)) == 0);
+
+		T_OK("the next index answers",
+		     get_cred_status(&srv, MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 2u, &st));
+		T_OK("and is free", !st.exists && !st.have_user && !st.have_data);
+		T_OK("the same index of another type answers",
+		     get_cred_status(&srv, MATTER_DL_CRED_ALIRO_ENDPOINT_KEY, 1u, &st));
+		T_OK("and is free: an index is scoped to its type", !st.exists);
+
+		/* A credential type that only matches once truncated to a byte, and
+		 * an index that only matches once truncated to 16 bits. */
+		T_OK("a type past one byte answers",
+		     get_cred_status(&srv, 0x100u + MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 1u,
+				     &st));
+		T_OK("and is not mistaken for the type it truncates to", !st.exists);
+		T_OK("an index past 16 bits answers",
+		     get_cred_status(&srv, MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 0x10001u, &st));
+		T_OK("and is not mistaken for the index it truncates to", !st.exists);
+
+		s_lookup_user = 0;
+		T_OK("a key with no user answers",
+		     get_cred_status(&srv, MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 1u, &st));
+		T_OK("exists, with a null user index", st.exists && !st.have_user && st.have_data);
+
+		/* A port with no store has nothing at any address. */
+		info.ultrawidelock_credential_lookup_cb = NULL;
+		T_OK("no lookup hook still answers",
+		     get_cred_status(&srv, MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 1u, &st));
+		T_OK("with nothing there", !st.exists && !st.have_data);
+	}
+
+	t_group("SetCredential keeps one key per index");
+	{
+		uint8_t held[MATTER_ALIRO_VERIFICATION_KEY_LEN];
+		uint8_t other[MATTER_ALIRO_VERIFICATION_KEY_LEN];
+		uint32_t response = 0u;
+
+		reset_doubles();
+		fill_info(&info);
+		info.ultrawidelock_credential_lookup_cb = lookup_cb;
+		matter_clusters_init(&srv, &info);
+		pattern(held, sizeof(held), 0x31u);
+		pattern(other, sizeof(other), 0x77u);
+		s_lookup_type = MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT;
+		s_lookup_index = 1u;
+		s_lookup_user = 1;
+		memcpy(s_lookup_key, held, sizeof(held));
+
+		flen = build_cred_op_fields(fields, sizeof(fields), 0u,
+					    MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 1u, other);
+		T_EQ("Add of another key to a taken index is answered",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_CREDENTIAL, fields,
+				 flen, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("with a SetCredentialResponse", (long)response,
+		     (long)MATTER_CMD_DL_SET_CREDENTIAL_RESPONSE);
+		T_EQ("that says Occupied", info.last_credential_status, MATTER_DL_STATUS_OCCUPIED);
+		T_EQ("and the store was not asked to add it", s_cred_calls, 0);
+		T_EQ("nor to remove the key that is there", s_clear_cred_calls, 0);
+		T_EQ("and no user index is attributed", info.last_user_index, 0);
+
+		flen = build_cred_op_fields(fields, sizeof(fields), MATTER_DL_DATA_OP_MODIFY,
+					    MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 1u, other);
+		T_EQ("Modify of a taken index is answered",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_CREDENTIAL, fields,
+				 flen, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("the old key was revoked first", s_clear_cred_calls, 1);
+		T_OK("by its own address",
+		     s_clear_cred_type == MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT &&
+			     s_clear_cred_index == 1u);
+		T_EQ("then the new key was stored", s_cred_calls, 1);
+		T_OK("which is the key the command carried",
+		     memcmp(s_cred_key, other, sizeof(other)) == 0);
+		T_EQ("and the response says so", info.last_credential_status,
+		     MATTER_IM_STATUS_SUCCESS);
+
+		/* A Modify whose revocation did not stick must not add the new key
+		 * beside the old one: that is the two-keys-one-index state again. */
+		s_cred_calls = 0;
+		s_clear_cred_result = -1;
+		T_EQ("Modify whose removal failed is answered",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_CREDENTIAL, fields,
+				 flen, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("with FAILURE", info.last_credential_status, MATTER_IM_STATUS_FAILURE);
+		T_EQ("and nothing was added", s_cred_calls, 0);
+
+		/* The same key again is not a second key: Apple re-sends one it
+		 * already installed, and that must stay a success. */
+		s_clear_cred_result = 0;
+		s_clear_cred_calls = 0;
+		flen = build_cred_op_fields(fields, sizeof(fields), 0u,
+					    MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 1u, held);
+		T_EQ("Add of the key already at the index is answered",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_CREDENTIAL, fields,
+				 flen, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("as a success", info.last_credential_status, MATTER_IM_STATUS_SUCCESS);
+		T_EQ("handed to the store as before", s_cred_calls, 1);
+		T_EQ("with nothing revoked", s_clear_cred_calls, 0);
+
+		/* A free index takes any key, whatever the operation. */
+		s_cred_calls = 0;
+		flen = build_cred_op_fields(fields, sizeof(fields), 0u,
+					    MATTER_DL_CRED_ALIRO_EVICTABLE_ENDPOINT, 2u, other);
+		T_EQ("Add to a free index is answered",
+		     run_command(&srv, MATTER_CLUSTER_DOOR_LOCK, MATTER_CMD_DL_SET_CREDENTIAL, fields,
+				 flen, &response),
+		     MATTER_IM_STATUS_SUCCESS);
+		T_EQ("as a success too", info.last_credential_status, MATTER_IM_STATUS_SUCCESS);
+		T_EQ("and stored", s_cred_calls, 1);
 	}
 
 	/*
