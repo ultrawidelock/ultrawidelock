@@ -57,6 +57,27 @@ tag was cut.
   433,432 B to 431,268 B, 2,164 B back. The two fixes above cost about
   1.3 KiB and are paid from that.
 
+### DWM3001CDK: one resumed subscription per controller
+
+- **Every lock or unlock was followed by `CASE message refused (-4)` and four
+  `invalid or unsuccessful StatusResponse` lines.** The lock stores each
+  subscription so a restart can hand it back to its controller. A controller
+  that subscribed again over a new session took a new slot and left its old
+  record behind, and after a restart every record for that controller came
+  back on its one new session. Measured 2026-10-05 with five records for one
+  hub: five reports per lock, four refused by the hub, which had replaced
+  those subscriptions long before, and the hub's answer to the first refused
+  by the lock, because an exchange remembers the last four ids this node
+  opened and that report was the fifth back. Unacknowledged, the hub sent
+  that answer four more times, 0.3 s to 0.9 s apart. The lock now resumes the
+  newest record for a controller and passes over the rest, and drops a
+  subscription the first time its controller refuses a report for it. The
+  records are also read at a boot with no fabric, so the ids handed out after
+  a factory reset stay above the ones left in flash; they restarted at 1,
+  which let a leftover outrank the live subscription. No host test compiles
+  this file, so this is checked by build and waits for the bench. 128 B on
+  the two-anchor image: 433,324 B, 128 B of signing margin.
+
 ### DWM3001CDK: Apple Home removing the lock after a restart
 
 - **Home dropped the lock by itself after a reflash or a reset, and only an

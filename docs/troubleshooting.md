@@ -95,6 +95,16 @@ sends its key (a `CREDENTIAL ADDED (type 7 ...)` line). On current firmware
 `time=0` means the dates did not parse, or `validUntil` is behind the newest
 `validFrom` the reader has learned from since boot.
 
+**Every lock or unlock is followed by `CASE message refused (-4)` and several
+`invalid or unsuccessful StatusResponse` lines.** DWM3001CDK firmware that
+resumed every stored subscription after a restart: it reported to each, and the
+controller refused the ones it had replaced. Current firmware resumes the newest
+one per controller. A single `invalid or unsuccessful StatusResponse` is a
+controller refusing a report for a subscription it no longer holds; the lock
+drops that subscription and the controller subscribes again within about
+3 minutes. The first restart after updating from the older firmware can show
+it once.
+
 **The lock reports a full fabric table.** Five committed fabrics are supported;
 Apple Home commonly accounts for two and Home Assistant one. Remove an unused
 controller through **Manage fabrics**: authenticated `RemoveFabric` tombstones
