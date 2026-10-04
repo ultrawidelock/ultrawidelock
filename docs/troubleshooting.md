@@ -70,6 +70,17 @@ Apple Home is undisturbed and no persistent slot is consumed. If the new
 controller already reached `CommissioningComplete`, remove that fabric from a
 surviving controller with **Manage fabrics**.
 
+**Apple Home removed the lock on its own after a reset or a reflash.** The log
+shows `cluster 0x0101 command 0x001b` and then `cluster 0x003e command 0x000a`:
+`GetUser`, then `RemoveFabric`. Read the `->` line under each. `-> user N in use
+0` means the hub did not find the user it wrote at setup, which firmware older
+than the stored user table answered after every restart. `-> fabric A removed by
+fabric B` names the administrator that went, and A equal to B is a controller
+removing itself. The other fabric is still on the lock, so it does
+not advertise for pairing: share it again from the controller that is left, or
+hold SW2 through reset and pair from the start. A lock paired before that
+firmware has no stored table and needs this once more.
+
 **The lock reports a full fabric table.** Five committed fabrics are supported;
 Apple Home commonly accounts for two and Home Assistant one. Remove an unused
 controller through **Manage fabrics**: authenticated `RemoveFabric` tombstones

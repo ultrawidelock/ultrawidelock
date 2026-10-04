@@ -36,6 +36,7 @@
 #if MATTER_FEATURE_CLIENT
 #define K_BIND ULTRAWIDELOCK_KV_KEY_MATTER_MF2_BINDING
 #endif
+#define K_USERS ULTRAWIDELOCK_KV_KEY_MATTER_MF2_USERS
 
 static bool kv_has(uint16_t key)
 {
@@ -153,6 +154,89 @@ void test_matter_fab_settings(void)
 		     loaded.binding.e[0].has_node);
 #endif
 
+	/*
+	 * Found on hardware: the table was RAM only. A controller that wrote a
+	 * user, then read an empty slot after the node reset, sent RemoveFabric.
+	 */
+	t_group("matter_fab_settings: the user table survives a reset");
+	settingsfake_reset();
+	fill_identity(&stored);
+	T_EQ("identity stored for the user table", store_identity(&stored), 0);
+	stored.users[0].in_use = true;
+	stored.users[0].unique_id = 0xA1B2C3D4u;
+	stored.users[0].status = 1u;
+	stored.users[0].type = 2u;
+	stored.users[0].credential_rule = 1u;
+	stored.users[0].creator_fabric = 1u;
+	stored.users[0].modifier_fabric = 2u;
+	stored.users[MATTER_DL_USERS_MAX - 1u].in_use = true;
+	stored.users[MATTER_DL_USERS_MAX - 1u].unique_id = 7u;
+	T_EQ("user table store succeeds",
+	     matter_fab_commit(&stored, MATTER_FABRIC_STORE_USERS, 0u, NULL, 0u), 0);
+	T_OK("user table has its own key", kv_has(K_USERS));
+	memset(&loaded, 0, sizeof(loaded));
+	T_EQ("identity reloads with it", matter_fab_load(&loaded), 0);
+	T_OK("the first row survives field for field",
+	     loaded.users[0].in_use && loaded.users[0].unique_id == 0xA1B2C3D4u &&
+		     loaded.users[0].status == 1u && loaded.users[0].type == 2u &&
+		     loaded.users[0].credential_rule == 1u &&
+		     loaded.users[0].creator_fabric == 1u &&
+		     loaded.users[0].modifier_fabric == 2u);
+	T_OK("the last row survives",
+	     loaded.users[MATTER_DL_USERS_MAX - 1u].in_use &&
+		     loaded.users[MATTER_DL_USERS_MAX - 1u].unique_id == 7u);
+	T_OK("a row nobody wrote stays empty", !loaded.users[1].in_use);
+
+	/* An emptied table is a state, not an absence: the old rows must not
+	 * come back because nothing newer was written over them. */
+	memset(stored.users, 0, sizeof(stored.users));
+	T_EQ("emptied user table store succeeds",
+	     matter_fab_commit(&stored, MATTER_FABRIC_STORE_USERS, 0u, NULL, 0u), 0);
+	memset(&loaded, 0, sizeof(loaded));
+	T_EQ("identity reloads after the clear", matter_fab_load(&loaded), 0);
+	T_OK("a cleared user stays cleared", !loaded.users[0].in_use &&
+						     !loaded.users[MATTER_DL_USERS_MAX - 1u].in_use);
+
+	t_group("matter_fab_settings: a damaged user table costs the users, not the fabrics");
+	stored.users[0].in_use = true;
+	T_EQ("user table stored for corruption",
+	     matter_fab_commit(&stored, MATTER_FABRIC_STORE_USERS, 0u, NULL, 0u), 0);
+	T_OK("user table corrupted", kv_corrupt(K_USERS));
+	memset(&loaded, 0, sizeof(loaded));
+	T_EQ("the identity still loads", matter_fab_load(&loaded), 0);
+	T_EQ("both fabrics survive", loaded.fabrics[0].index + loaded.fabrics[1].index, 3);
+	T_OK("and no damaged row is presented", !loaded.users[0].in_use);
+
+	/*
+	 * The record outlives the fabrics in flash: removing the last
+	 * administrator tombstones the fabric, not the table. Nothing may read
+	 * it back, and the next home's first commit has to replace it.
+	 */
+	t_group("matter_fab_settings: a new home does not inherit the last one's users");
+	settingsfake_reset();
+	fill_identity(&stored);
+	T_EQ("first home stored", store_identity(&stored), 0);
+	stored.users[4].in_use = true;
+	stored.users[4].unique_id = 0x0DDBA11u;
+	T_EQ("first home's user stored",
+	     matter_fab_commit(&stored, MATTER_FABRIC_STORE_USERS, 0u, NULL, 0u), 0);
+	T_EQ("one administrator removed",
+	     matter_fab_commit(&stored, MATTER_FABRIC_STORE_REMOVE, 1u, NULL, 0u), 0);
+	memset(&loaded, 0, sizeof(loaded));
+	T_EQ("the survivor loads", matter_fab_load(&loaded), 0);
+	T_OK("and still has the user", loaded.users[4].in_use);
+	T_EQ("last administrator removed",
+	     matter_fab_commit(&stored, MATTER_FABRIC_STORE_REMOVE, 0u, NULL, 0u), 0);
+	memset(&loaded, 0, sizeof(loaded));
+	loaded.users[4].in_use = true;
+	T_EQ("nothing is left to load", matter_fab_load(&loaded), 1);
+	T_OK("and no user is presented without a fabric", !loaded.users[4].in_use);
+	fill_identity(&stored);
+	T_EQ("second home stored", store_identity(&stored), 0);
+	memset(&loaded, 0, sizeof(loaded));
+	T_EQ("second home loads", matter_fab_load(&loaded), 0);
+	T_OK("without the first home's user", !loaded.users[4].in_use);
+
 	t_group("matter_fab_settings: nothing stored");
 	settingsfake_reset();
 	memset(&loaded, 0, sizeof(loaded));
@@ -172,7 +256,7 @@ void test_matter_fab_settings(void)
 	fill_identity(&stored);
 	memset(&loaded, 0, sizeof(loaded));
 	(void)matter_fab_load(&loaded);
-	settingsfake_fail_saves_after(3); /* meta + network + ICAC tombstone land */
+	settingsfake_fail_saves_after(3); /* meta + network + user table land */
 
 	stored.attempt.have_thread_candidate = true;
 	stored.attempt.thread_dataset_len = stored.thread_dataset_len;

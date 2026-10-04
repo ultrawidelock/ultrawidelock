@@ -10,6 +10,25 @@ tag was cut.
 
 ## [Unreleased]
 
+### DWM3001CDK: Apple Home removing the lock after a restart
+
+- **Home dropped the lock by itself after a reflash or a reset, and only an
+  erase got it back.** The Door Lock user table was held in RAM only. After a
+  restart the hub reconnected, asked `GetUser` for the user it had written at
+  setup, was answered with an empty slot, and sent `RemoveFabric` about 130 ms
+  later (measured 2026-10-04, 35 s after boot). The hub removes only its own
+  fabric. The phone's fabric stays, a lock that still holds a fabric does not
+  advertise for pairing, and so nothing could add it again short of
+  `make flash-erase` or SW2 held through reset. The table is now written to
+  flash before `SetUser` or `ClearUser` is acknowledged, restored at boot, and
+  replaced when a new home commissions an empty lock. Host-tested; the bench
+  run against Apple Home is still to do. A lock paired on earlier firmware has
+  no stored table, so pair it once more after this update.
+- **The log says what a `RemoveFabric` removed and what `GetUser` answered.**
+  `-> fabric 1 removed by fabric 1` and `-> user 1 in use 1` (0 for an empty
+  slot) now follow the `invoke:` line. Before, a controller walking away left
+  only two command numbers.
+
 ### ESP32-S3: pairing a fresh lock with Apple Home
 
 - **"Unable to add Accessory" on a freshly erased board.** Home commissions a
