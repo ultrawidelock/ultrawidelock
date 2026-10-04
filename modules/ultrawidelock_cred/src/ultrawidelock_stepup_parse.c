@@ -251,11 +251,16 @@ static int key_is(const uint8_t *s, size_t n, char c)
 
 /* ---- RFC 3339 tdate (UTC "Z" form) -> epoch seconds ---------------------- */
 
-/* ULTRAWIDELOCK_STEPUP_LEAN (a -D from a flash-bound app): the document's dates,
- * the COSE alg label and the x5chain are skipped rather than recorded. Every
- * struct field stays, zeroed, so the verifier is unchanged; what is lost is
- * what a reader with no trusted clock and only provisioned issuers never reads. */
-#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
+/* ULTRAWIDELOCK_STEPUP_LEAN (a -D from a flash-bound app): the COSE alg label
+ * and the x5chain are skipped rather than recorded. Every struct field stays,
+ * zeroed, so the verifier is unchanged; what is lost is what a reader with only
+ * provisioned issuers never reads.
+ *
+ * The dates are NOT part of it any more. They were, on the reasoning that a
+ * reader with no clock has nothing to compare them with, and the first Watch
+ * on such a build was refused on every approach: its document requires time
+ * verification, and the verifier's answer to that, taking the time from the
+ * document's own signed validFrom, needs the dates this parse had dropped. */
 /**
  * Parse two decimal digits (s[0], s[1]). Returns 0 and *out = 0-99, else -1.
  */
@@ -303,7 +308,6 @@ static int tdate_epoch(const uint8_t *s, size_t n, int64_t *epoch)
 	*epoch = days * 86400 + hh * 3600 + mm * 60 + ss;
 	return 0;
 }
-#endif /* !ULTRAWIDELOCK_STEPUP_LEAN */
 
 /* ---- MobileSecurityObject (Table 7-1) ------------------------------------ */
 
@@ -422,7 +426,6 @@ static int parse_validity(struct cbor *c, struct ultrawidelock_stepup_doc *doc)
 			doc->have_iteration = 1;
 			continue;
 		}
-#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 		if (key_is(k, kl, '1') || key_is(k, kl, '2') || key_is(k, kl, '3')) {
 			uint64_t tag;
 			const uint8_t *s;
@@ -456,7 +459,6 @@ static int parse_validity(struct cbor *c, struct ultrawidelock_stepup_doc *doc)
 			}
 			continue;
 		}
-#endif /* the dates ("1".."3") fall to the skipper on a lean build */
 		if (cb_skip(c) != 0) { /* expectedUpdate "4" or unknown */
 			return -1;
 		}

@@ -1614,8 +1614,8 @@ static PHASE_HANDLER int learn_verify(struct ultrawidelock_session *s,
 	 * step 5 whatever its signature said. The time is the newest validFrom
 	 * a stored issuer has signed (s_doc_time), and a document ahead of it
 	 * moves it forward, as the reference lock's ratchet does
-	 * (docs/protocol-notes.md). A lean build parses no dates, so there the
-	 * ratchet has nothing to read and such a document still fails. No
+	 * (docs/protocol-notes.md). A lean build used to parse no dates and
+	 * so refused every such document; it keeps them now. No
 	 * access-iteration history is kept yet, so step 6 always passes. */
 	ctx.time_valid = s_doc_time != 0;
 	ctx.now_epoch = s_doc_time;
@@ -1658,7 +1658,6 @@ static PHASE_HANDLER int learn_verify(struct ultrawidelock_session *s,
 	return picked;
 }
 
-#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 /* Seconds since 1970 for a log line; a validUntil in the year 4001 does not fit
  * 32 bits and prints as the largest value that does. */
 static unsigned log_epoch(int64_t t)
@@ -1666,6 +1665,7 @@ static unsigned log_epoch(int64_t t)
 	return t < 0 ? 0u : t > (int64_t)UINT32_MAX ? UINT32_MAX : (unsigned)t;
 }
 
+#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 /*
  * What a rejected document was checked against. The verdict line says a step
  * failed and not which operands failed it, and for step 2 the explanations
@@ -1674,8 +1674,8 @@ static unsigned log_epoch(int64_t t)
  * signature still fails, or its own certificate signed it (x5chain). The kid
  * is the first 8 bytes of SHA-256("key-identifier" || issuer key), Aliro
  * §7.2.1. First 8 bytes of each key, as for the anchors; only on a rejection.
- * Not on a lean build: it parses neither the dates nor the x5chain, and the
- * lines cost about 0.5 KiB of flash that the nRF52833 debug image does not have.
+ * Not on a lean build: it does not parse the x5chain, and the lines cost about
+ * 0.5 KiB of flash that the nRF52833 debug image does not have.
  */
 static void learn_log_operands(const struct ultrawidelock_stepup_verdict *v, bool x5chain)
 {
@@ -1836,7 +1836,6 @@ static void learn_decide(struct ultrawidelock_session *s)
 		learn_reject(s, "learned key not persisted");
 		return;
 	}
-#if !defined(ULTRAWIDELOCK_STEPUP_LEAN)
 	/* Only a document that ended in a learned key moves the time: one that
 	 * vouched for another key, or whose key could not be stored, was refused,
 	 * and a refused document sets nothing. Forward only. */
@@ -1845,7 +1844,6 @@ static void learn_decide(struct ultrawidelock_session *s)
 		LOG_INF("[conn %u] document time moved to %u (validFrom of the learned document)",
 			s->conn_handle, log_epoch(s_doc_time));
 	}
-#endif
 	s->stepup_active = false;
 	s->learn_pending = false;
 	notify_access(true);

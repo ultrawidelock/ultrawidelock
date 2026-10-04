@@ -321,7 +321,6 @@ int ultrawidelock_stepup_verify(const struct ultrawidelock_stepup_doc *doc,
 	int have_now = ctx->time_valid;
 	int64_t now = ctx->now_epoch;
 
-#if !defined(ULTRAWIDELOCK_STEPUP_LEAN) /* a lean parse keeps no dates to take the time from */
 	if (ctx->time_ratchet && v->sig_ok && v->issuer_chain_validated && doc->have_valid_from &&
 	    doc->have_valid_until &&
 	    doc->valid_from_epoch <= doc->valid_until_epoch &&
@@ -330,7 +329,6 @@ int ultrawidelock_stepup_verify(const struct ultrawidelock_stepup_doc *doc,
 		have_now = 1;
 		v->ratchet_epoch = now;
 	}
-#endif
 	if (have_now) {
 		v->time_ok = doc->have_valid_from && doc->have_valid_until &&
 			     now >= doc->valid_from_epoch && now <= doc->valid_until_epoch;
