@@ -709,8 +709,24 @@ static bool spare_eph_refill(void)
 	return valid;
 }
 
+/*
+ * A phase handler of transaction_feed(), or one of the two branches under a
+ * handler that copies a trust store. Kept out of line.
+ *
+ * Each carries a few hundred bytes to over a kilobyte of scratch. Left to the
+ * optimiser, some were folded into transaction_feed() and some were not, and
+ * which ones changed from build to build: the frame of whichever stayed out
+ * went on top of a transaction_feed() frame already sized for the ones folded
+ * in. MEASURED 2026-10-05 on the DWM3001CDK plain image, deepest direct-call
+ * path below transaction_feed(): 4,344 B on main (learn_commit out, AUTH1 in),
+ * 4,496 B after a change elsewhere flipped that (AUTH1 out, the rest in), and
+ * the standard phase alone went from 3,496 B to 4,496 B. Out of line, a
+ * transaction costs the handler that is running and nothing for the others.
+ */
+#define PHASE_HANDLER __attribute__((noinline))
+
 /* Kick the reader-driven access protocol: ephemeral keys + txid -> AUTH0. */
-static void start_auth(struct ultrawidelock_session *s)
+static PHASE_HANDLER void start_auth(struct ultrawidelock_session *s)
 {
 	if (s_provisioning_state != PROVISIONING_READY &&
 	    !(CONFIG_ULTRAWIDELOCK_CRED_DEV_TRUST &&
@@ -842,8 +858,8 @@ static bool send_exchange(struct ultrawidelock_session *s)
  * unlock attribution. Returns 0 when the session was consumed (EXCHANGE sent,
  * or a hard failure); -1 when nothing matched and the caller should continue
  * with the standard phase. */
-static int try_fast_auth(struct ultrawidelock_session *s,
-			 const struct ultrawidelock_auth0_response *r)
+static PHASE_HANDLER int try_fast_auth(struct ultrawidelock_session *s,
+				       const struct ultrawidelock_auth0_response *r)
 {
 	uint8_t salt[ULTRAWIDELOCK_SALT_MAX], block[ULTRAWIDELOCK_KEY_BLOCK_LEN];
 	uint8_t plain[ULTRAWIDELOCK_CRYPTOGRAM_LEN];
@@ -941,7 +957,8 @@ static int try_fast_auth(struct ultrawidelock_session *s,
 // parse failure, ECDH failure, signing failure) sets s->phase to PH_FAILED and returns without
 // sending. On success sets s->phase to PH_SENT_AUTH1 after sending the AUTH1 command. Logs (does
 // not fail on) an unexpected status word other than 0x9000.
-static void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl, size_t len)
+static PHASE_HANDLER void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl,
+					    size_t len)
 {
 	// Holds the fields parsed from an AUTH0Response APDU while it is being processed by the
 	// reader's response handler.
@@ -1028,7 +1045,8 @@ static void on_auth0_response(struct ultrawidelock_session *s, const uint8_t *pl
 // success, seals and sends the EXCHANGE command, sets s->phase to PH_SENT_EXCHANGE, and logs the
 // derived URSK; on any failure path sets s->phase to PH_FAILED and returns without sending
 // EXCHANGE.
-static void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl, size_t len)
+static PHASE_HANDLER void on_auth1_response(struct ultrawidelock_session *s, const uint8_t *pl,
+					    size_t len)
 {
 	// Holds the fields parsed from an AUTH1Response APDU while it is being processed by the
 	// reader's response handler.
@@ -1534,10 +1552,14 @@ static void stepup_submit_job(struct ultrawidelock_session *s)
  * that makes it an Access Document for THIS key -- the MSO deviceKey must be the
  * key the device signed AUTH1 with. Returns the slot of the issuer that signed
  * it and copies its key to issuer_pub, or -1 with *why set. *v carries the last
- * §7.4 verdict for the log. */
-static int learn_verify(struct ultrawidelock_session *s,
-			uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN], const char **why,
-			struct ultrawidelock_stepup_verdict *v, bool *x5chain)
+ * §7.4 verdict for the log.
+ *
+ * Out of line so that its issuer table and the verifier's scratch are gone
+ * before learn_commit() copies the trust store. */
+static PHASE_HANDLER int learn_verify(struct ultrawidelock_session *s,
+				      uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN],
+				      const char **why, struct ultrawidelock_stepup_verdict *v,
+				      bool *x5chain)
 {
 	struct ultrawidelock_stepup_issuer issuers[ULTRAWIDELOCK_ISSUER_MAX];
 	struct ultrawidelock_stepup_verify_ctx ctx;
@@ -1692,8 +1714,8 @@ static void learn_log_operands(const struct ultrawidelock_stepup_verdict *v, boo
  * type, mint its Kpersistent, persist -- and only then publish the grant. Same
  * rule as the Matter add: a key that cannot be persisted is not trusted.
  * Returns 0, or -1 when the key is NOT trusted. */
-static int learn_commit(struct ultrawidelock_session *s,
-			const uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN])
+static PHASE_HANDLER int learn_commit(struct ultrawidelock_session *s,
+				      const uint8_t issuer_pub[ULTRAWIDELOCK_CRED_PUB_LEN])
 {
 	struct ultrawidelock_reader_identity id;
 	struct ultrawidelock_trust_store cand;
@@ -1832,7 +1854,8 @@ static void learn_decide(struct ultrawidelock_session *s)
 
 /* Collect the DeviceResponse across ENVELOPE / GET RESPONSE (ISO7816 61XX
  * chaining) before completing the AP. The worker verifies it afterwards. */
-static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *pl, size_t len)
+static PHASE_HANDLER void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *pl,
+					     size_t len)
 {
 	uint16_t sw;
 
@@ -1917,7 +1940,8 @@ static void on_stepup_response(struct ultrawidelock_session *s, const uint8_t *p
 
 /* Handle the EXCHANGE response, then complete the AP and arm ranging. The body is
  * an AP (proto-0) response on the ExpeditedSK channel: <ct || 16B tag> SW1SW2. */
-static void on_exchange_response(struct ultrawidelock_session *s, const uint8_t *pl, size_t len)
+static PHASE_HANDLER void on_exchange_response(struct ultrawidelock_session *s, const uint8_t *pl,
+					       size_t len)
 {
 	uint16_t sw;
 

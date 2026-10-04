@@ -11,6 +11,7 @@ passing its flags through `HITL_ARGS`.
 | DWM3001CDK operations | `cdk-dfu.sh`, `cdk-find-probe.sh`, `cdk-rtt-elf-check.sh`, `mcuboot-keyhash-check.py` |
 | FreeRTOS port checks | `freertos-platform-check.sh`, `freertos-radio-source-check.sh`, `freertos-ble-source-check.sh`, `freertos-crypto-source-check.sh`, `freertos-matter-source-check.sh`, `freertos-ncs-source-check.sh`, `freertos-vector-check.sh`, `freertos-printf-check.sh`, `freertos-hal-fake-fidelity.py`, `freertos-ble-liveness.py`, `freertos-pairing-code.py` |
 | Firmware size | `cdk-size.py`, `cdk-size-compare.py`, `cdk-size-baseline.py` |
+| Stack depth | `cdk-stack-depth.py` |
 | Delta update and SMP | `ultrawidelock_patch.py`, `ultrawidelock_push.py`, `ultrawidelock_smp.py`, `ota-index.py` |
 | Provisioning | `ultrawidelock-enroll.py`, `spake2p_verifier.py`, `bind-helper.py` |
 | Release and validation | `release-bundle.sh`, `release-notes.sh`, `sdk-export.sh`, `hitl-run.sh`, `regress-hil.sh`, `test-runner.sh` |
