@@ -153,8 +153,10 @@ Real captures, all in `assets/`:
   hardware.
 - `grid-demo-dark.webp` / `grid-demo-light.webp`: Home Key setup, Approach
   Direction, provisioning, NFC tap and live lock state on hardware.
-- `card.png`, `badges.svg`, `divider.svg`, and `social-preview.png` (the
-  `og:image`; `build.py` warns when it is absent).
+- `twin-demo.webp`: the digital twin at the moment the firmware unlocks,
+  captured from the live page with the noise switch off.
+- `card.png` and `social-preview.png` (the `og:image`; `build.py` warns when
+  it is absent).
 
 Real, re-derivable numbers already on the surfaces:
 
