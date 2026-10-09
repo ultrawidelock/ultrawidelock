@@ -1,6 +1,7 @@
 <div align="center">
 
 <a href="https://ultrawidelock.com"><img src="assets/card.png" width="880" alt="UltraWideLock: an Apple UWB digital key lock that an iPhone or Apple Watch unlocks on approach over UWB or on tap over NFC"/></a>
+<a href="LICENSE"><img src="assets/disclaimer.svg" width="880" alt="Disclaimer. Provided as is, without warranty of any kind. No author or contributor shall be liable for any damages."/></a>
 
 **Walk up. It unlocks.**<br/>
 Open-source firmware for a door lock that opens from Apple Wallet. No vendor app, account or cloud.
